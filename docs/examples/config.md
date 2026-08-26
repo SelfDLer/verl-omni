@@ -1,6 +1,6 @@
 # Config Explanation
 
-Last updated: 07/30/2026
+Last updated: 08/23/2026
 
 VeRL-Omni builds on [verl](https://github.com/verl-project/verl) and reuses the
 same Hydra config surface for shared RL trainer fields (`data`, FSDP actor /
@@ -164,7 +164,7 @@ actor_rollout_ref:
 - `actor_rollout_ref.actor.use_distill_loss`: Enable teacher-anchored online policy distillation.
 - `actor_rollout_ref.actor.distill_loss_mode`: `distill_kl` or `distill_fm_mse`.
 - `actor_rollout_ref.actor.distill_loss_coef`: Distillation loss coefficient.
-- `distillation.enabled` / `distillation.teacher_models.teacher_model.model_path`: Frozen teacher that produces the `teacher_*` batch keys the distillation losses consume — see [Diffusion On-Policy Distillation](../algo/diffusion_opd.md).
+- `distillation.enabled` / `distillation.teacher_models.<name>.{key,model_path,world_size}` / `distillation.teacher_key` / `distillation.{n_gpus_per_node,nnodes}`: Frozen teachers (routed per sample, colocated or on their own pool) that produce the `teacher_*` batch keys the distillation losses consume — see [Diffusion On-Policy Distillation](../algo/diffusion_opd.md).
 - `actor_rollout_ref.actor.rollout_correction.*`: Per-actor mirror of `algorithm.rollout_correction` (used when `bypass_mode=True` for per-step RS inside `diffusion_loss`).
 
 Shared PPO / FSDP / optim fields (`ppo_mini_batch_size`, `ppo_epochs`, `optim.lr`, `fsdp_config`, …) follow upstream verl — see the [verl Config Explanation](https://verl.readthedocs.io/en/latest/examples/config.html).
@@ -188,6 +188,7 @@ actor_rollout_ref:
       max_sequence_length: 512
       guidance_scale: null
       num_frames: 1
+      task: null
 ```
 
 - `actor_rollout_ref.rollout.pipeline.height` / `width`: Image / video spatial size for training rollout.
@@ -196,6 +197,7 @@ actor_rollout_ref:
 - `actor_rollout_ref.rollout.pipeline.max_sequence_length`: Max text-encoder token length for prompt encoding.
 - `actor_rollout_ref.rollout.pipeline.guidance_scale`: Distilled guidance scale for models with guidance embeddings; `null` disables.
 - `actor_rollout_ref.rollout.pipeline.num_frames`: Wan2.2 (and similar) video frame count (`81` ≈ 3s at 24 fps; image models keep `1`).
+- `actor_rollout_ref.rollout.pipeline.task`: Optional task label forwarded to the pipeline's request contract (vLLM-Omni reads it as the request `task`); values are pipeline-specific (e.g. MiniMax-H3: `t2va` / `fl2va` / `ref2va`), `null` lets the engine infer it.
 - `actor_rollout_ref.rollout.pipeline.output_type`: Pipeline output modality (dataclass default `image`).
 
 #### Rollout algo — `DiffusionRolloutAlgoConfig`
@@ -336,7 +338,7 @@ actor_rollout_ref:
 - `actor_rollout_ref.model.override_config`: Dict merged into HF config load (e.g. `attn_implementation`).
 - `actor_rollout_ref.model.enable_activation_offload` / `use_remove_padding`: Memory / packing flags for the FSDP actor.
 - `actor_rollout_ref.model.lora_*` / `target_modules` / `policy_state_adapters` / `fsdp_layer_prefixes`: Same LoRA roles as diffusion (defaults differ slightly, e.g. `lora_alpha: 16`).
-- `actor_rollout_ref.model.use_liger` / `use_fused_kernels` / `fused_kernel_options` / `tiled_mlp`: Optional kernel / memory optimizations.
+- `actor_rollout_ref.model.use_liger` / `use_fused_kernels`: Unsupported by omni FSDP/FSDP2 and must remain `false`; enabling either fails before model loading. The adjacent `fused_kernel_options` / `tiled_mlp` fields are backend-specific.
 - `actor_rollout_ref.model.max_image_tokens` / `max_audio_tokens` / `max_video_tokens`: Multimodal token budgets (`null` = unset).
 - `actor_rollout_ref.model.lora` / `mtp`: Megatron-style LoRA block and multi-token prediction (speculative decoding) configs; see the YAML comments in `omni/model/omni_model.yaml`.
 

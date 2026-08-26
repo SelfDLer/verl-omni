@@ -19,6 +19,7 @@ This trainer supports model-agnostic model initialization with Hugging Face.
 import json
 import logging
 import os
+import subprocess
 import uuid
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -38,7 +39,7 @@ from verl.checkpoint_engine import CheckpointEngineManager
 from verl.plugin.platform import get_platform
 from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
 from verl.single_controller.ray import RayClassWithInitArgs, RayWorkerGroup, ResourcePoolManager
-from verl.single_controller.ray.base import create_colocated_worker_cls
+from verl.single_controller.ray.base import create_colocated_worker_cls, split_resource_pool
 from verl.trainer.distillation import is_distillation_enabled
 from verl.trainer.ppo.metric_utils import compute_variance_proxy_metrics, process_validation_metrics
 from verl.trainer.ppo.reward import extract_reward
@@ -68,6 +69,7 @@ from verl_omni.trainer.diffusion.diffusion_metric_utils import (
 )
 from verl_omni.trainer.diffusion.diffusion_trainer_utils import (
     NoOpCheckpointManager,
+    _to_diffusion_worker_tensordict,
     old_policy_decay,
     validate_distillation_config,
 )
@@ -77,6 +79,7 @@ from verl_omni.trainer.diffusion.rollout_correction import (
     compute_rollout_corr_metrics_from_batch,
     rollout_correction_enabled,
 )
+from verl_omni.trainer.diffusion.teacher_manager import DiffusionTeacherManager
 from verl_omni.utils.tracking import _export_video, batch_items, log_wandb_media, wrap_val_samples_for_wandb
 from verl_omni.workers.utils.padding import embeds_padding_2_no_padding
 
@@ -205,6 +208,7 @@ class BaseRayDiffusionTrainer(ABC):
         self.ref_in_actor = lora_rank > 0 or config.actor_rollout_ref.model.get("lora_adapter_path") is not None
 
         self.use_teacher_policy = is_distillation_enabled(config.get("distillation"))
+        self.distillation_config = omega_conf_to_dataclass(config.distillation) if self.use_teacher_policy else None
         validate_distillation_config(config)
 
         self._create_dataloader(train_dataset, val_dataset, collate_fn, train_sampler)
@@ -296,8 +300,8 @@ class BaseRayDiffusionTrainer(ABC):
             with open_dict(self.config):
                 if OmegaConf.select(self.config, "actor_rollout_ref.actor.optim"):
                     self.config.actor_rollout_ref.actor.optim.total_training_steps = total_training_steps
-        except Exception as e:
-            print(f"Warning: Could not set total_training_steps in config. Structure missing? Error: {e}")
+        except (KeyError, TypeError, AttributeError, OmegaConf.errors.OmegaConfBaseException) as e:
+            raise RuntimeError("Failed to propagate trainer.total_training_steps to actor optimizer config.") from e
 
     def _dump_generations(
         self,
@@ -317,6 +321,8 @@ class BaseRayDiffusionTrainer(ABC):
         ``outputs`` is a batch of images ``[N, C, H, W]`` (-> ``{i}.jpg``) or videos
         ``[N, T, C, H, W]`` (-> ``{i}.mp4`` at ``fps``). ``max_samples`` caps how many
         are written (``None`` = all). Optional generated audio is muxed into video files.
+        Failed video exports are preserved as ``{i}.pt`` fallback payloads and recorded
+        in the JSONL instead of terminating training.
         """
         if not isinstance(outputs, torch.Tensor) or outputs.dtype != torch.uint8:
             dtype = getattr(outputs, "dtype", type(outputs))
@@ -338,19 +344,51 @@ class BaseRayDiffusionTrainer(ABC):
         is_video = outputs.ndim == 5  # [N, T, C, H, W] vs image [N, C, H, W]
 
         output_paths = []
+        output_fallback_paths = [None] * n
+        video_export_errors = [None] * n
         if is_video:
             audios = batch_items(audios, n_full, "audio")
             audio_sample_rates = batch_items(audio_sample_rates, n_full, "audio_sample_rate")
             for i in range(n):
                 video_path = os.path.join(visual_folder, f"{i}.mp4")
-                _export_video(
-                    outputs[i],
-                    video_path,
-                    fps=fps,
-                    audio=audios[i],
-                    audio_sample_rate=audio_sample_rates[i],
-                )
-                output_paths.append(video_path)
+                try:
+                    _export_video(
+                        outputs[i],
+                        video_path,
+                        fps=fps,
+                        audio=audios[i],
+                        audio_sample_rate=audio_sample_rates[i],
+                    )
+                except (OSError, subprocess.SubprocessError, ValueError) as error:
+                    error_message = f"{type(error).__name__}: {error}"
+                    fallback_path = os.path.join(visual_folder, f"{i}.pt")
+                    fallback_audio = audios[i]
+                    if isinstance(fallback_audio, torch.Tensor):
+                        fallback_audio = fallback_audio.detach().cpu()
+                    fallback = {
+                        "video": outputs[i].detach().cpu(),
+                        "audio": fallback_audio,
+                        "audio_sample_rate": audio_sample_rates[i],
+                    }
+                    try:
+                        torch.save(fallback, fallback_path)
+                    except Exception as fallback_error:
+                        fallback_path = None
+                        error_message = (
+                            f"{error_message}; fallback save failed: {type(fallback_error).__name__}: {fallback_error}"
+                        )
+                    else:
+                        output_fallback_paths[i] = fallback_path
+                    video_export_errors[i] = error_message
+                    sys_logger.warning(
+                        "Failed to export rollout video at step %s sample %s: %s",
+                        self.global_steps,
+                        i,
+                        error_message,
+                    )
+                    output_paths.append(None)
+                else:
+                    output_paths.append(video_path)
         else:
             images_pil = outputs[:n].cpu().permute(0, 2, 3, 1).numpy()
             for i, image in enumerate(images_pil):
@@ -371,6 +409,9 @@ class BaseRayDiffusionTrainer(ABC):
         for k, v in reward_extra_infos_dict.items():
             if len(v) == n_full:
                 base_data[k] = list(v)[:n]
+        if any(video_export_errors):
+            base_data["output_fallback"] = output_fallback_paths
+            base_data["video_export_error"] = video_export_errors
 
         lines = []
         for i in range(n):
@@ -673,6 +714,10 @@ class BaseRayDiffusionTrainer(ABC):
             return
         self._init_online_rollout_stack(actor_rollout_resource_pool)
 
+    @staticmethod
+    def _teacher_wg_name(key: str) -> str:
+        return f"teacher_{key.replace('/', '_')}"
+
     def _init_colocated_workers(self):
         """Create Ray pools and colocated actor/ref worker groups (online and offline)."""
         self.resource_pool_manager.create_resource_pool()
@@ -707,6 +752,22 @@ class BaseRayDiffusionTrainer(ABC):
                 role=str(Role.RefPolicy),
             )
             self.resource_pool_to_cls[resource_pool][str(Role.RefPolicy)] = ref_policy_cls
+
+        # create standalone teachers if needed, one sub-pool per teacher
+        if self.use_teacher_policy and Role.TeacherModel in self.role_worker_mapping:
+            teacher_pool = self.resource_pool_manager.get_resource_pool(Role.TeacherModel)
+            teacher_models = self.distillation_config.teacher_models
+            split_pools = split_resource_pool(teacher_pool, split_size=[t.world_size for t in teacher_models.values()])
+            for key, pool in zip(teacher_models, split_pools, strict=True):
+                self.resource_pool_to_cls[pool] = {
+                    self._teacher_wg_name(key): RayClassWithInitArgs(
+                        self.role_worker_mapping[Role.TeacherModel],
+                        config=self.config.actor_rollout_ref,
+                        distillation_config=self.config.get("distillation"),
+                        role=str(Role.TeacherModel),
+                        teacher_key=key,
+                    )
+                }
 
         # initialize WorkerGroup
         # NOTE: if you want to use a different resource pool for each role, which can support different parallel size,
@@ -761,6 +822,24 @@ class BaseRayDiffusionTrainer(ABC):
 
         if self.ref_in_actor:
             self.ref_policy_wg = self.actor_rollout_wg
+
+        if self.use_teacher_policy:
+            if Role.TeacherModel in self.role_worker_mapping:
+                teacher_wg = {
+                    key: all_wg[self._teacher_wg_name(key)] for key in self.distillation_config.teacher_models
+                }
+                for wg in teacher_wg.values():
+                    wg.init_model()
+            else:
+                teacher_wg = {key: self.actor_rollout_wg for key in self.distillation_config.teacher_models}
+            from verl_omni.workers.engine_workers import resolve_teacher_infer_micro_batch_size
+
+            self.teacher_model_manager = DiffusionTeacherManager(
+                self.distillation_config,
+                self.config.actor_rollout_ref.model,
+                teacher_wg,
+                infer_micro_batch_size_per_gpu=resolve_teacher_infer_micro_batch_size(self.config.actor_rollout_ref),
+            )
 
         return actor_rollout_resource_pool
 
@@ -903,6 +982,11 @@ class BaseRayDiffusionTrainer(ABC):
                 if not os.path.isabs(global_step_folder):
                     working_dir = os.getcwd()
                     global_step_folder = os.path.join(working_dir, global_step_folder)
+            else:
+                raise ValueError(
+                    f"Unknown trainer.resume_mode={self.config.trainer.resume_mode!r}. "
+                    "Available options: ['disable', 'auto', 'resume_path']."
+                )
         print(f"Load from checkpoint folder: {global_step_folder}")
         # set global step
         self.global_steps = int(global_step_folder.split("global_step_")[-1])
@@ -928,7 +1012,7 @@ class BaseRayDiffusionTrainer(ABC):
         rollout_config = self.config.actor_rollout_ref.rollout
         batch.meta_info["multi_turn"] = rollout_config.multi_turn.enable
         # update actor
-        batch_td = batch.to_tensordict()
+        batch_td = _to_diffusion_worker_tensordict(batch)
         # step 2: convert from padding to no-padding
         batch_td = embeds_padding_2_no_padding(batch_td)
         ppo_mini_batch_size = self.config.actor_rollout_ref.actor.ppo_mini_batch_size
@@ -972,6 +1056,9 @@ class BaseRayDiffusionTrainer(ABC):
             self.actor_rollout_wg.start_profile(role="e2e", profile_step=self.global_steps)
             if self.use_reference_policy and not self.ref_in_actor:
                 self.ref_policy_wg.start_profile(profile_step=self.global_steps)
+            if self.use_teacher_policy and Role.TeacherModel in self.role_worker_mapping:
+                for wg in self.teacher_model_manager.teacher_wg.values():
+                    wg.start_profile(profile_step=self.global_steps)
         except Exception:
             if controller_profile_started:
                 try:
@@ -989,6 +1076,9 @@ class BaseRayDiffusionTrainer(ABC):
             self.actor_rollout_wg.stop_profile()
             if self.use_reference_policy and not self.ref_in_actor:
                 self.ref_policy_wg.stop_profile()
+            if self.use_teacher_policy and Role.TeacherModel in self.role_worker_mapping:
+                for wg in self.teacher_model_manager.teacher_wg.values():
+                    wg.stop_profile()
         finally:
             if self._controller_nsys_profile_active:
                 try:
@@ -1006,7 +1096,7 @@ class PolicyGradientRayTrainer(BaseRayDiffusionTrainer):
     """Policy-gradient diffusion trainer for FlowGRPO, MixGRPO, DanceGRPO, GRPO-Guard, etc."""
 
     def _compute_ref_log_prob(self, batch: DataProto) -> DataProto:
-        batch_td = batch.to_tensordict()
+        batch_td = _to_diffusion_worker_tensordict(batch)
         batch_td = embeds_padding_2_no_padding(batch_td)
         metadata = {
             "compute_loss": False,
@@ -1029,23 +1119,8 @@ class PolicyGradientRayTrainer(BaseRayDiffusionTrainer):
         )
         return DataProto.from_tensordict(ref_log_prob)
 
-    def _compute_teacher_prev_sample_mean(self, batch: DataProto) -> DataProto:
-        batch_td = batch.to_tensordict()
-        batch_td = embeds_padding_2_no_padding(batch_td)
-        tu.assign_non_tensor(
-            batch_td,
-            compute_loss=False,
-            height=self.config.actor_rollout_ref.model.pipeline.height,
-            width=self.config.actor_rollout_ref.model.pipeline.width,
-            vae_scale_factor=self.config.actor_rollout_ref.model.get("vae_scale_factor", 8),
-        )
-        output = self.actor_rollout_wg.infer_teacher_batch(batch_td)
-        prev_sample_mean = tu.get(output, "prev_sample_mean")
-        teacher_output = tu.get_tensordict({"teacher_prev_sample_mean": prev_sample_mean.float()})
-        return DataProto.from_tensordict(teacher_output)
-
     def _compute_old_log_prob(self, batch: DataProto) -> tuple[DataProto, Optional[float]]:
-        batch_td = batch.to_tensordict()
+        batch_td = _to_diffusion_worker_tensordict(batch)
         batch_td = embeds_padding_2_no_padding(batch_td)
         tu.assign_non_tensor(
             batch_td,
@@ -1230,7 +1305,7 @@ class PolicyGradientRayTrainer(BaseRayDiffusionTrainer):
                     if self.use_teacher_policy:
                         # score the rollout trajectories with the frozen teacher
                         with marked_timer("teacher", timing_raw, color="olive"):
-                            batch = batch.union(self._compute_teacher_prev_sample_mean(batch))
+                            batch = batch.union(self.teacher_model_manager.compute_prev_sample_mean(batch))
 
                     with marked_timer("adv", timing_raw, color="brown"):
                         # we combine with rule-based rm
@@ -1412,7 +1487,7 @@ class DirectPreferenceRayTrainer(BaseRayDiffusionTrainer):
     def _update_actor(self, batch: DataProto) -> DataProto:
         rollout_config = self.config.actor_rollout_ref.rollout
         batch.meta_info["multi_turn"] = rollout_config.multi_turn.enable
-        batch_td = batch.to_tensordict()
+        batch_td = _to_diffusion_worker_tensordict(batch)
         batch_td = embeds_padding_2_no_padding(batch_td)
         ppo_mini_batch_size = self.config.actor_rollout_ref.actor.ppo_mini_batch_size
         paired = self.config.algorithm.get("paired_preference", False)
@@ -1451,7 +1526,7 @@ class DirectPreferenceRayTrainer(BaseRayDiffusionTrainer):
 
     def _compute_ref_noise_pred(self, batch: DataProto) -> Optional[DataProto]:
         """Reference transformer output and shared flow tensors."""
-        batch_td = batch.to_tensordict()
+        batch_td = _to_diffusion_worker_tensordict(batch)
         batch_td = embeds_padding_2_no_padding(batch_td)
         metadata = {
             "compute_loss": False,
