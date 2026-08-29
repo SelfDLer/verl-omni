@@ -16,7 +16,9 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pandas as pd
 import pyarrow.parquet as pq
+import pytest
 
 
 def _load_module():
@@ -31,82 +33,105 @@ def _load_module():
 nextqa = _load_module()
 
 
-def _record(problem_id=1, video_filename="NextQA/NExTVideo/0001/clip.mp4", **overrides):
+def _record(video=3238737531, answer=3, qid=2, **overrides):
     record = {
-        "problem_id": problem_id,
-        "problem": (
-            "What happens after the person sits down?\nOptions:\n"
-            "A. They stand up.\nB. They wave.\nC. They read.\nD. They sleep.\nE. They leave."
-        ),
-        "data_type": "video",
-        "problem_type": ["reasoning"],
-        "solution": "<answer>C</answer>",
-        "video_filename": video_filename,
+        "video": video,
+        "frame_count": 100,
+        "width": 640,
+        "height": 360,
+        "question": "how many children are in the video",
+        "answer": answer,
+        "qid": qid,
+        "type": "DC",
+        "a0": "one",
+        "a1": "three",
+        "a2": "seven",
+        "a3": "two",
+        "a4": "five",
     }
     record.update(overrides)
     return record
 
 
+def _write_dataset(root: Path, train_records, val_records, mapping) -> Path:
+    repo_dir = root / "repo"
+    repo_dir.mkdir(parents=True)
+    pd.DataFrame(train_records).to_csv(repo_dir / "train.csv", index=False)
+    pd.DataFrame(val_records).to_csv(repo_dir / "val.csv", index=False)
+    (repo_dir / "map_vid_vidorID.json").write_text(json.dumps(mapping), encoding="utf-8")
+    (root / "NExTVideo").mkdir()
+    return root
+
+
 def _write_video(root: Path, relative_path: str) -> Path:
-    path = root / relative_path
+    path = root / "NExTVideo" / relative_path
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"video")
     return path.resolve()
 
 
-def test_build_rl_row_validates_options_solution_and_video(tmp_path):
-    row, reason = nextqa.build_rl_row(_record(), tmp_path, split="train", index=0)
-    assert row is None
-    assert reason == "missing_video"
-
-    _write_video(tmp_path, "NextQA/NExTVideo/0001/clip.mp4")
-    row, reason = nextqa.build_rl_row(_record(solution="C"), tmp_path, split="train", index=0)
-    assert row is None
-    assert reason == "invalid_solution"
-
-    row, reason = nextqa.build_rl_row(_record(problem="Question without choices"), tmp_path, "train", 0)
-    assert row is None
-    assert reason == "invalid_options"
-
-
-def test_convert_dataset_writes_group_split_parquets(tmp_path):
-    first_video = _write_video(tmp_path, "NextQA/NExTVideo/0001/first.mp4")
-    second_video = _write_video(tmp_path, "NextQA/NExTVideo/0002/second.mp4")
-    records = [
-        _record(problem_id=1, video_filename="./NextQA/NExTVideo/0001/first.mp4"),
-        _record(problem_id=2, video_filename="./NextQA/NExTVideo/0001/first.mp4", solution="<answer>A</answer>"),
-        _record(problem_id=3, video_filename="./NextQA/NExTVideo/0002/second.mp4", solution="<answer>B</answer>"),
-    ]
-    (tmp_path / nextqa.DEFAULT_INPUT_FILE).write_text(
-        "\n".join(json.dumps(record) for record in records), encoding="utf-8"
-    )
+def test_convert_dataset_preserves_official_splits_and_answer_letters(tmp_path, monkeypatch):
+    train_records = [_record(video=1000 + answer, answer=answer, qid=answer) for answer in range(5)]
+    val_records = [_record(video=2000, answer=4, qid=9, question="what happens next")]
+    mapping = {str(record["video"]): f"{record['video']}/clip" for record in train_records + val_records}
+    _write_dataset(tmp_path, train_records, val_records, mapping)
+    for relative_path in mapping.values():
+        _write_video(tmp_path, f"{relative_path}.mp4")
+    monkeypatch.setattr(nextqa, "probe_audio_stream", lambda _video_path: None)
 
     output_dir = tmp_path / "output"
-    stats = nextqa.convert_dataset(tmp_path, output_dir, validation_ratio=0.5, seed=7)
+    stats = nextqa.convert_dataset(tmp_path, output_dir)
     train_rows = pq.read_table(output_dir / "train.parquet").to_pylist()
     validation_rows = pq.read_table(output_dir / "validation.parquet").to_pylist()
 
-    assert stats["input"] == 3
-    assert stats["kept"] == 3
-    assert stats["train"] + stats["validation"] == 3
-    assert stats["dropped"] == {}
+    assert stats["train"]["input"] == 5
+    assert stats["train"]["kept"] == 5
+    assert stats["train"]["audio"] == {
+        "checked_videos": 5,
+        "with_audio": 5,
+        "missing_audio_stream": 0,
+        "invalid_media": 0,
+    }
+    assert stats["train"]["answers"] == {letter: 1 for letter in "ABCDE"}
+    assert stats["validation"]["input"] == 1
+    assert stats["validation"]["kept"] == 1
+    assert stats["validation"]["audio"] == {
+        "checked_videos": 1,
+        "with_audio": 1,
+        "missing_audio_stream": 0,
+        "invalid_media": 0,
+    }
+    assert len(train_rows) == 5
+    assert len(validation_rows) == 1
+    assert {row["extra_info"]["split"] for row in train_rows} == {"train"}
+    assert {row["extra_info"]["split"] for row in validation_rows} == {"validation"}
+    assert [row["reward_model"]["ground_truth"] for row in train_rows] == [
+        f"<answer>{letter}</answer>" for letter in "ABCDE"
+    ]
 
-    train_videos = {row["videos"][0]["video"] for row in train_rows}
-    validation_videos = {row["videos"][0]["video"] for row in validation_rows}
-    assert train_videos.isdisjoint(validation_videos)
-    assert train_videos | validation_videos == {str(first_video), str(second_video)}
-
-    row = (train_rows + validation_rows)[0]
+    row = train_rows[3]
     assert row["data_source"] == nextqa.DATA_SOURCE
     assert row["ability"] == nextqa.ABILITY
     assert row["prompt"][0]["content"] == nextqa.SYSTEM_PROMPT
-    assert row["prompt"][1]["content"].startswith("<video>What happens")
+    assert row["prompt"][1]["content"] == (
+        "<video>how many children are in the video\nA. one\nB. three\nC. seven\nD. two\nE. five"
+    )
+    assert row["videos"][0]["video"] == str((tmp_path / "NExTVideo/1003/clip.mp4").resolve())
+    assert Path(row["videos"][0]["video"]).is_file()
     assert row["videos"][0]["fps"] == 1.0
     assert row["videos"][0]["min_pixels"] == 32 * 28 * 28
     assert row["videos"][0]["max_pixels"] == 128 * 28 * 28
     assert row["videos"][0]["max_frames"] == 32
-    assert row["reward_model"]["ground_truth"].startswith("<answer>")
-    assert set(json.loads(row["extra_info"]["options"])) == set("ABCDE")
+    assert row["extra_info"]["problem_id"] == "1003_3"
+    assert row["extra_info"]["answer_index"] == 3
+    assert row["extra_info"]["answer_letter"] == "D"
+    assert json.loads(row["extra_info"]["options"]) == {
+        "A": "one",
+        "B": "three",
+        "C": "seven",
+        "D": "two",
+        "E": "five",
+    }
 
     for output_path in (output_dir / "train.parquet", output_dir / "validation.parquet"):
         parquet_file = pq.ParquetFile(output_path)
@@ -114,3 +139,148 @@ def test_convert_dataset_writes_group_split_parquets(tmp_path):
             encodings = parquet_file.metadata.row_group(0).column(column_index).encodings
             assert "RLE_DICTIONARY" not in encodings
             assert "PLAIN_DICTIONARY" not in encodings
+
+
+def test_convert_split_counts_invalid_official_records(tmp_path, monkeypatch):
+    valid = _record(video=1, qid=1)
+    records = [
+        valid,
+        _record(video=2, qid=2),
+        _record(video=3, qid=3),
+        _record(video=1, qid=4, answer="not-an-index"),
+        _record(video=1, qid=5, answer=5),
+        _record(video=1, qid=6, question=None),
+        _record(video=1, qid=7, a2=float("nan")),
+    ]
+    _write_dataset(tmp_path, records, [valid], {"1": "0001/video", "3": "0003/missing.mp4"})
+    _write_video(tmp_path, "0001/video.mp4")
+    monkeypatch.setattr(nextqa, "probe_audio_stream", lambda _video_path: None)
+
+    output_path = tmp_path / "output/train.parquet"
+    stats = nextqa.convert_split(
+        tmp_path / "repo/train.csv",
+        output_path,
+        nextqa.load_video_mapping(tmp_path / "repo/map_vid_vidorID.json"),
+        tmp_path / "NExTVideo",
+        "train",
+    )
+
+    assert stats == {
+        "input": 7,
+        "kept": 1,
+        "dropped": {
+            "empty_option": 1,
+            "empty_question": 1,
+            "invalid_answer": 2,
+            "missing_video": 1,
+            "missing_video_mapping": 1,
+        },
+        "audio": {
+            "checked_videos": 1,
+            "with_audio": 1,
+            "missing_audio_stream": 0,
+            "invalid_media": 0,
+        },
+        "answers": {"D": 1},
+        "output": str(output_path.resolve()),
+    }
+
+
+def test_convert_split_filters_audio_failures_and_caches_unique_videos(tmp_path, monkeypatch):
+    records = [
+        _record(video=1, qid=1),
+        _record(video=1, qid=2),
+        _record(video=2, qid=3),
+        _record(video=2, qid=4),
+        _record(video=3, qid=5),
+    ]
+    mapping = {str(video_id): f"{video_id:04d}/video" for video_id in (1, 2, 3)}
+    _write_dataset(tmp_path, records, [records[0]], mapping)
+    video_paths = {
+        video_id: _write_video(tmp_path, f"{relative_path}.mp4")
+        for video_id, relative_path in ((int(video_id), path) for video_id, path in mapping.items())
+    }
+    statuses = {
+        str(video_paths[1]): None,
+        str(video_paths[2]): "missing_audio_stream",
+        str(video_paths[3]): "invalid_media",
+    }
+    probe_calls = []
+
+    def fake_probe(video_path):
+        probe_calls.append(video_path)
+        return statuses[video_path]
+
+    monkeypatch.setattr(nextqa, "probe_audio_stream", fake_probe)
+    output_path = tmp_path / "output/train.parquet"
+    stats = nextqa.convert_split(
+        tmp_path / "repo/train.csv",
+        output_path,
+        nextqa.load_video_mapping(tmp_path / "repo/map_vid_vidorID.json"),
+        tmp_path / "NExTVideo",
+        "train",
+    )
+
+    assert probe_calls == [str(video_paths[video_id]) for video_id in (1, 2, 3)]
+    assert stats == {
+        "input": 5,
+        "kept": 2,
+        "dropped": {"invalid_media": 1, "missing_audio_stream": 2},
+        "audio": {
+            "checked_videos": 3,
+            "with_audio": 1,
+            "missing_audio_stream": 1,
+            "invalid_media": 1,
+        },
+        "answers": {"D": 2},
+        "output": str(output_path.resolve()),
+    }
+    assert {row["extra_info"]["video_id"] for row in pq.read_table(output_path).to_pylist()} == {"1"}
+
+
+def test_resolve_video_path_handles_extension_and_rejects_escape(tmp_path):
+    video_root = tmp_path / "NExTVideo"
+    video_root.mkdir()
+    video = _write_video(tmp_path, "0083/5572343997.mp4")
+
+    assert nextqa.resolve_video_path(video_root, "0083/5572343997") == video
+    assert nextqa.resolve_video_path(video_root, "0083/5572343997.mp4") == video
+    assert nextqa.resolve_video_path(video_root, "../outside") is None
+
+
+def test_convert_split_reports_missing_csv_columns(tmp_path):
+    source_path = tmp_path / "train.csv"
+    pd.DataFrame([_record()]).drop(columns=["a4", "qid"]).to_csv(source_path, index=False)
+
+    with pytest.raises(ValueError, match=r"Missing required columns.*a4, qid"):
+        nextqa.convert_split(source_path, tmp_path / "train.parquet", {}, tmp_path, "train")
+
+
+def test_convert_dataset_rejects_nested_video_directory(tmp_path):
+    _write_dataset(tmp_path, [_record()], [_record()], {"3238737531": "0001/video"})
+    (tmp_path / "NExTVideo/NExTVideo").mkdir()
+
+    with pytest.raises(ValueError, match=r"Invalid nested NExT-QA video directory.*unzip NExTVideo\.zip"):
+        nextqa.convert_dataset(tmp_path, tmp_path / "output")
+
+
+def test_convert_dataset_reports_missing_standard_video_directory(tmp_path):
+    _write_dataset(tmp_path, [_record()], [_record()], {"3238737531": "0001/video"})
+    (tmp_path / "NExTVideo").rmdir()
+
+    with pytest.raises(FileNotFoundError, match=r"Required NExT-QA video directory.*do not use `-d NExTVideo`"):
+        nextqa.convert_dataset(tmp_path, tmp_path / "output")
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"fps": 0}, "fps must be greater than zero"),
+        ({"min_pixels": 0}, "pixel limits must satisfy"),
+        ({"min_pixels": 10, "max_pixels": 9}, "pixel limits must satisfy"),
+        ({"max_frames": 1}, "max_frames must be at least 2"),
+    ],
+)
+def test_convert_dataset_validates_sampling_parameters(tmp_path, overrides, message):
+    with pytest.raises(ValueError, match=message):
+        nextqa.convert_dataset(tmp_path, tmp_path / "output", **overrides)

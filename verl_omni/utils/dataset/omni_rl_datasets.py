@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 from omegaconf import DictConfig
@@ -46,5 +47,14 @@ class QwenOmniRLHFDataset(RLHFDataset):
         # Qwen returns (audios, images, videos); verl expects
         # (images, videos, audios). AVQA keeps the default because it supplies
         # a standalone audio track; video tasks can opt into the video audio.
-        audios, images, videos = process_mm_info(messages, use_audio_in_video=use_audio_in_video)
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    category=FutureWarning,
+                    message=r".*__audioread_load.*",
+                )
+                audios, images, videos = process_mm_info(messages, use_audio_in_video=use_audio_in_video)
+        except Exception as error:
+            raise RuntimeError(f"Failed to process multimodal sample: {messages}") from error
         return images, videos, audios

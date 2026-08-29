@@ -1,13 +1,13 @@
 # Qwen3-Omni Thinker GSPO Trainer
 
-Last updated: 08/20/2026
+Last updated: 08/27/2026
 
 This example shows how to post-train the **Qwen3-Omni-30B-A3B Thinker** with
 **GSPO** on multimodal reasoning tasks, using FSDP for the actor and `vllm-omni` as
 the async rollout backend. Four input recipes are supported: **text → text**
 (`gsm8k`), **image → text** (`MMK12`), **text + image + audio → text**
 (`AVQA-R1-6K`), and **video frames + video audio + text → text**
-(`TinyLLaVA-Video-R1-NextQA`).
+(`NExT-QA`).
 
 Both **GPU** and **NPU** training platforms are supported:
 
@@ -287,33 +287,86 @@ preserves its `RLHFDataset` base class, sets rollout NPU memory utilization to
 extracts the first `<answer>...</answer>` payload and returns a binary exact-match
 reward against the tagged dataset label.
 
-## Training with `TinyLLaVA-Video-R1-NextQA`
+## Training with `NExT-QA`
 
-This recipe follows Relax quick-start task4 while using verl-omni's GSPO loss,
-Qwen3-Omni V1 trainer, `vllm-omni` rollout, and Ascend NPU FSDP2 actor. Each
-sample contains one video and a five-way question. Both sampled frames and the
-video's audio track are passed to Qwen3-Omni; the expected completion ends in a
-single tag such as `<answer>C</answer>`.
+This recipe uses the official NExT-QA train and validation annotations with
+verl-omni's GSPO loss, Qwen3-Omni V1 trainer, `vllm-omni` rollout, and Ascend
+NPU FSDP2 actor. Each sample contains one video and a five-way question. Both
+sampled frames and the video's audio track are passed to Qwen3-Omni; the
+expected completion ends in a single tag such as `<answer>C</answer>`.
 
 ### Prepare the dataset
 
-```bash
-hf download --repo-type dataset Zhang199/TinyLLaVA-Video-R1-training-data \
-    --local-dir /path/to/NextQA
-unzip /path/to/NextQA/NextQA.zip -d /path/to/NextQA
+Clone the official annotation repository. The upstream files live under
+`dataset/nextqa/`, so copy the four files used by this recipe to the documented
+`repo/` annotation root:
 
-python examples/gspo_trainer/data_process/nextqa.py \
-    --input_dir /path/to/NextQA \
-    --output_dir $HOME/data/nextqa
+```bash
+mkdir -p /path/to/NextQA
+cd /path/to/NextQA
+git clone https://github.com/doc-doc/NExT-QA.git repo
+cp repo/dataset/nextqa/{train.csv,val.csv,test.csv,map_vid_vidorID.json} repo/
 ```
 
-The converter validates the JSONL schema, five choices, tagged label, media
-path, and path traversal. It writes `train.parquet` and `validation.parquet`
-using a deterministic 95/5 split by distinct video, so questions sharing the
-same clip cannot leak across splits. Absolute media paths are stored in the
-parquet and must be mounted identically on every Ray worker.
+Download [`NExTVideo.zip`](https://drive.google.com/file/d/1jTcRCrVHS66ckOUfWRb-rXdzJ52XAWQH/view?usp=share_link)
+from the official NExT-QA repository link and place it directly in
+`/path/to/NextQA`. Extract it from that directory:
 
-Video sampling follows the Relax task4 budget: 1 FPS, 32--128 visual tokens per
+```bash
+cd /path/to/NextQA
+unzip NExTVideo.zip
+```
+
+`NExTVideo.zip` already contains a top-level `NExTVideo/` directory. Do not use
+`unzip NExTVideo.zip -d NExTVideo`; that produces the invalid directory
+`NExTVideo/NExTVideo/`, which the converter deliberately rejects.
+
+The resulting input must have this layout:
+
+```text
+NextQA/
+├── repo/
+│   ├── train.csv
+│   ├── val.csv
+│   ├── test.csv
+│   └── map_vid_vidorID.json
+├── NExTVideo.zip
+└── NExTVideo/
+    ├── 0001/
+    ├── ...
+    └── 0083/
+        └── 5572343997.mp4
+```
+
+Run the converter from the verl-omni repository root:
+
+```bash
+python examples/gspo_trainer/data_process/nextqa.py \
+    --input_dir /path/to/NextQA \
+    --output_dir /path/to/nextqa_parquet
+```
+
+This writes `/path/to/nextqa_parquet/train.parquet` from official `train.csv`
+and `/path/to/nextqa_parquet/validation.parquet` from official `val.csv`; it
+does not randomly re-split records. The converter uses `map_vid_vidorID.json`
+to resolve each CSV video ID, validates fields and media paths, and uses
+`ffprobe` to retain only videos with an audio stream. Install FFmpeg and ensure
+`ffprobe` is available in `PATH` before conversion. The printed JSON reports
+input, kept, dropped-by-reason, answer, output, and unique-video audio statistics
+for each split. `dropped` counts QA records; `audio` counts unique videos, so
+multiple questions for one rejected video increase the former but not the
+latter. Absolute media paths are stored in parquet and must be mounted
+identically on every Ray worker.
+
+The output files can also be referenced directly in a trainer data config:
+
+```yaml
+data:
+  train_files: /path/to/nextqa_parquet/train.parquet
+  val_files: /path/to/nextqa_parquet/validation.parquet
+```
+
+Video sampling uses 1 FPS, 32--128 visual tokens per
 frame (`25088--100352` pixels), and at most 32 frames. These values are embedded
 in each parquet video item for `qwen_omni_utils.process_mm_info`; override them
 at conversion time with `--fps`, `--min_pixels`, `--max_pixels`, or
