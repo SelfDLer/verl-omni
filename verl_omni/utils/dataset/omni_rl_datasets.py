@@ -70,7 +70,7 @@ class QwenOmniRLHFDataset(RLHFDataset):
                 audios, images, videos = process_mm_info(messages, use_audio_in_video=use_audio_in_video)
         except Exception as error:
             raise RuntimeError(f"Failed to process multimodal sample: {messages}") from error
-            
+
         if audios is not None:
             audios = [pad_audio_to_hop_multiple(a) for a in audios]
         return images, videos, audios

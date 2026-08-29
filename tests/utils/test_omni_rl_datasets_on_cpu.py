@@ -75,5 +75,10 @@ def test_process_multi_modal_info_uses_qwen_omni_utils_and_reorders_outputs(monk
         config={"mm_processor_kwargs": {"use_audio_in_video": True}},
     )
 
-    assert result == (images, videos, audios)
+    assert result[0] is images
+    assert result[1] is videos
+    assert len(result[2]) == 1
+    assert result[2][0].shape == (padded_len,)
+    np.testing.assert_array_equal(result[2][0][:L], audios[0])
+    np.testing.assert_array_equal(result[2][0][L:], 0.0)
     assert calls == [(messages, False), (messages, True)]
