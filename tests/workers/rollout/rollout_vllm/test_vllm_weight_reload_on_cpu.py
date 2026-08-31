@@ -32,9 +32,7 @@ def _make_worker(model, model_config):
 
 
 def _patch_reload_hooks(monkeypatch, events):
-    reload_module = importlib.import_module(
-        "vllm.model_executor.model_loader.reload"
-    )
+    reload_module = importlib.import_module("vllm.model_executor.model_loader.reload")
     monkeypatch.setattr(
         reload_module,
         "initialize_layerwise_reload",
@@ -56,9 +54,7 @@ def test_standard_vllm_bucket_reload_order_on_cpu(monkeypatch):
     events = []
     buckets = [sentinel.bucket_0, sentinel.bucket_1]
     model_config = sentinel.model_config
-    model = SimpleNamespace(
-        load_weights=lambda weights: events.append(("load", weights))
-    )
+    model = SimpleNamespace(load_weights=lambda weights: events.append(("load", weights)))
 
     class FakeReceiver:
         def __init__(self, **kwargs):
@@ -75,9 +71,7 @@ def test_standard_vllm_bucket_reload_order_on_cpu(monkeypatch):
     )
     _patch_reload_hooks(monkeypatch, events)
 
-    utils_module.vLLMOmniColocateWorkerExtension.update_weights_from_ipc(
-        _make_worker(model, model_config)
-    )
+    utils_module.vLLMOmniColocateWorkerExtension.update_weights_from_ipc(_make_worker(model, model_config))
 
     assert events == [
         "initialize",
@@ -128,9 +122,7 @@ def test_standard_vllm_reload_finalizes_before_reraising(
     _patch_reload_hooks(monkeypatch, events)
 
     with pytest.raises(RuntimeError) as exc_info:
-        utils_module.vLLMOmniColocateWorkerExtension.update_weights_from_ipc(
-            _make_worker(model, sentinel.model_config)
-        )
+        utils_module.vLLMOmniColocateWorkerExtension.update_weights_from_ipc(_make_worker(model, sentinel.model_config))
 
     assert exc_info.value is original_error
     assert events == expected_events
