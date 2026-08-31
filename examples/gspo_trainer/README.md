@@ -393,12 +393,31 @@ data:
   val_files: /path/to/nextqa_parquet/validation.parquet
 ```
 
-Video sampling uses 1 FPS, 32--128 visual tokens per
-frame (`25088--100352` pixels), and at most 32 frames. These values are embedded
-in each parquet video item for `qwen_omni_utils.process_mm_info`; override them
-at conversion time with `--fps`, `--min_pixels`, `--max_pixels`, or
-`--max_frames`. Install the loader with `pip install -e ".[audio]"` and make
-`ffmpeg` available on every worker.
+Video sampling uses 1 FPS, 32--128 visual tokens per frame (`25088--100352` pixels), and at most 32 frames. These values are embedded in each parquet video item for `qwen_omni_utils.process_mm_info`; override them at conversion time with `--fps`, `--min_pixels`, `--max_pixels`, or `--max_frames`.
+
+Install the Qwen Omni media loader with:
+
+```bash
+pip install -e ".[audio]"
+```
+
+FFmpeg must also be available on every worker for video/audio decoding and for the dataset conversion step described above.
+
+> [!NOTE]
+> TorchCodec is strongly recommended for the NExT-QA NPU recipe. On a 320-core host, we observed stable decoding with TorchCodec, while the torchvision/PyAV fallback path showed severe transient native-thread growth and could fail with `Resource temporarily unavailable` during video decoding.
+>
+> For PyTorch 2.10 on Ascend/NPU, TorchCodec 0.10 can be built without CUDA support:
+>
+> ```bash
+> python -m pip install pybind11
+> git clone --branch v0.10.0 --depth 1 https://github.com/pytorch/torchcodec.git /tmp/torchcodec
+> cd /tmp/torchcodec
+> export pybind11_DIR="$(python -m pybind11 --cmakedir)"
+> ENABLE_CUDA=0 I_CONFIRM_THIS_IS_NOT_A_LICENSE_VIOLATION=1 \
+>     python -m pip install . --no-build-isolation --no-deps
+> ```
+>
+> Make sure the required FFmpeg development libraries are installed and that TorchCodec imports successfully on every Ray worker.
 
 The launcher enables `use_audio_in_video=true` and decodes audio at 16 kHz.
 Clips must therefore contain an audio stream that `ffmpeg` can decode. To run a
