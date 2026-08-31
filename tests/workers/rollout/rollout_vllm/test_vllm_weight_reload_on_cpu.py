@@ -3,8 +3,8 @@ from types import SimpleNamespace
 from unittest.mock import sentinel
 
 import pytest
-
 from verl.workers.rollout.vllm_rollout import bucketed_weight_transfer
+
 from verl_omni.workers.rollout.vllm_rollout import utils as utils_module
 
 
