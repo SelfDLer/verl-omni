@@ -411,6 +411,7 @@ actor_rollout_ref:
       sde_window_range: ${oc.select:actor_rollout_ref.rollout.algo.sde_window_range,null}
       sde_contiguous: ${oc.select:actor_rollout_ref.rollout.algo.sde_contiguous,true}
     model_type: diffusion_model
+  separate: false
   hybrid_engine: true
   nccl_timeout: 600
 data:
@@ -558,10 +559,15 @@ reward:
 distillation:
   _target_: verl_omni.workers.config.diffusion.DiffusionDistillationConfig
   enabled: false
+  n_gpus_per_node: 0
+  nnodes: 0
   teacher_models:
     teacher_model:
       _target_: verl_omni.workers.config.diffusion.DiffusionDistillationTeacherModelConfig
+      key: null
       model_path: null
+      world_size: 0
+  teacher_key: data_source
 algorithm:
   _target_: verl_omni.trainer.config.DiffusionAlgoConfig
   trainer_type: policy_gradient
@@ -613,9 +619,7 @@ trainer:
   default_local_dir: checkpoints/${trainer.project_name}/${trainer.experiment_name}
   max_actor_ckpt_to_keep: null
   ray_wait_register_center_timeout: 300
-  ray_master_port_range:
-  - 20000
-  - 30000
+  ray_master_port_range: null
   device: cuda
   use_v1: false
   v1:
