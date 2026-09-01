@@ -183,9 +183,7 @@ def test_standard_vllm_reload_falls_back_to_full_post_load_processing(monkeypatc
     _patch_standard_reload_dependencies(monkeypatch, events)
     monkeypatch.setattr(utils_module, "_is_npu_platform", lambda: is_npu)
 
-    utils_module.vLLMOmniColocateWorkerExtension.update_weights_from_ipc(
-        _make_worker(model, sentinel.model_config)
-    )
+    utils_module.vLLMOmniColocateWorkerExtension.update_weights_from_ipc(_make_worker(model, sentinel.model_config))
 
     assert events == [
         "patch_moe_loader",
