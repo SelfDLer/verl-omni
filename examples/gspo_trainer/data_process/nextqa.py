@@ -29,6 +29,7 @@ ABILITY = "video_qa"
 DATASET_NAME = "NExT-QA"
 ANSWER_LETTERS = "ABCDE"
 REQUIRED_COLUMNS = {"video", "question", "answer", "qid", "type", "a0", "a1", "a2", "a3", "a4"}
+MEDIA_PROBE_TIMEOUT_SECONDS = 30
 
 SYSTEM_PROMPT = (
     "Analyze the visual and audio information in the video and the question carefully. Explain your reasoning "
@@ -216,7 +217,7 @@ def _write_parquet(rows: list[dict[str, Any]], output_path: Path) -> None:
 
 
 def probe_audio_stream(video_path: str | Path) -> str | None:
-    """Return a stable drop reason when ffprobe cannot find usable audio metadata."""
+    """Return a stable drop reason when the first audio stream is not decodable."""
     try:
         result = subprocess.run(
             [
@@ -234,18 +235,52 @@ def probe_audio_stream(video_path: str | Path) -> str | None:
             capture_output=True,
             text=True,
             check=False,
+            timeout=MEDIA_PROBE_TIMEOUT_SECONDS,
         )
     except FileNotFoundError as error:
         raise RuntimeError(
             "ffprobe is required to filter NExT-QA videos without audio; install ffmpeg and ensure "
             "ffprobe is available in PATH"
         ) from error
+    except subprocess.TimeoutExpired:
+        return "invalid_media"
 
     if result.returncode != 0:
         return "invalid_media"
     if not result.stdout.strip():
         return "missing_audio_stream"
-    return None
+
+    try:
+        decode_result = subprocess.run(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-v",
+                "error",
+                "-i",
+                str(video_path),
+                "-map",
+                "0:a:0",
+                "-frames:a",
+                "1",
+                "-f",
+                "null",
+                "-",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=MEDIA_PROBE_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError as error:
+        raise RuntimeError(
+            "ffmpeg is required to validate NExT-QA audio decoding; install ffmpeg and ensure "
+            "ffmpeg is available in PATH"
+        ) from error
+    except subprocess.TimeoutExpired:
+        return "invalid_media"
+
+    return None if decode_result.returncode == 0 else "invalid_media"
 
 
 def convert_split(

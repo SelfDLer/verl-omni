@@ -9,6 +9,11 @@ set -o pipefail
 export CPATH=/usr/include${CPATH:+:$CPATH}
 export VLLM_ASCEND_ENABLE_NZ=0
 export VERL_USE_EXTERNAL_MODULES=verl_omni
+export OMP_NUM_THREADS=${OMP_NUM_THREADS:-8}
+export TQ_NUM_THREADS=${TQ_NUM_THREADS:-8}
+export OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-8}
+export MKL_NUM_THREADS=${MKL_NUM_THREADS:-8}
+export FORCE_QWENVL_VIDEO_READER=${FORCE_QWENVL_VIDEO_READER:-torchcodec}
 
 ASCEND_HOME_PATH=${ASCEND_HOME_PATH:-/usr/local/Ascend/cann-9.0.0}
 source "${ASCEND_HOME_PATH}/set_env.sh"
@@ -23,6 +28,7 @@ NNODES=${NNODES:-1}
 ROLLOUT_TP=${ROLLOUT_TP:-2}
 TOTAL_TRAINING_STEPS=${TOTAL_TRAINING_STEPS:-200}
 USE_AUDIO_IN_VIDEO=${USE_AUDIO_IN_VIDEO:-true}
+FILTER_OVERLONG_PROMPTS_WORKERS=${FILTER_OVERLONG_PROMPTS_WORKERS:-8}
 TOTAL_NPUS=$((N_GPUS_PER_NODE * NNODES))
 
 if (( TOTAL_NPUS % ROLLOUT_TP != 0 )); then
@@ -41,7 +47,7 @@ python3 -m verl_omni.trainer.main_omni \
     data.val_max_samples=-1 \
     data.validation_shuffle=false \
     data.filter_overlong_prompts=true \
-    data.filter_overlong_prompts_workers=64 \
+    data.filter_overlong_prompts_workers=${FILTER_OVERLONG_PROMPTS_WORKERS} \
     data.truncation=error \
     data.custom_cls.path=pkg://verl_omni.utils.dataset.omni_rl_datasets \
     data.custom_cls.name=QwenOmniRLHFDataset \

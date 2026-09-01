@@ -41,6 +41,8 @@ def test_nextqa_npu_launcher_wires_video_gspo_training():
         "python3 -m verl_omni.trainer.main_omni",
         "data.custom_cls.name=QwenOmniRLHFDataset",
         "USE_AUDIO_IN_VIDEO=${USE_AUDIO_IN_VIDEO:-true}",
+        "FILTER_OVERLONG_PROMPTS_WORKERS=${FILTER_OVERLONG_PROMPTS_WORKERS:-8}",
+        "data.filter_overlong_prompts_workers=${FILTER_OVERLONG_PROMPTS_WORKERS}",
         "++data.mm_processor_kwargs.use_audio_in_video=${USE_AUDIO_IN_VIDEO}",
         "++data.mm_processor_kwargs.sampling_rate=16000",
         "actor_rollout_ref.actor.strategy=fsdp2",
@@ -52,4 +54,13 @@ def test_nextqa_npu_launcher_wires_video_gspo_training():
         "trainer.total_training_steps=${TOTAL_TRAINING_STEPS}",
     )
     assert all(setting in launcher for setting in required_settings)
+    required_environment = (
+        "export OMP_NUM_THREADS=${OMP_NUM_THREADS:-8}",
+        "export TQ_NUM_THREADS=${TQ_NUM_THREADS:-8}",
+        "export OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-8}",
+        "export MKL_NUM_THREADS=${MKL_NUM_THREADS:-8}",
+        "export FORCE_QWENVL_VIDEO_READER=${FORCE_QWENVL_VIDEO_READER:-torchcodec}",
+    )
+    assert all(setting in launcher for setting in required_environment)
+    assert "data.filter_overlong_prompts_workers=64" not in launcher
     assert "models.transformers" not in launcher

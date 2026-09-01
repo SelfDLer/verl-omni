@@ -376,9 +376,11 @@ python examples/gspo_trainer/data_process/nextqa.py \
 This writes `/path/to/nextqa_parquet/train.parquet` from official `train.csv`
 and `/path/to/nextqa_parquet/validation.parquet` from official `val.csv`; it
 does not randomly re-split records. The converter uses `map_vid_vidorID.json`
-to resolve each CSV video ID, validates fields and media paths, and uses
-`ffprobe` to retain only videos with an audio stream. Install FFmpeg and ensure
-`ffprobe` is available in `PATH` before conversion. The printed JSON reports
+to resolve each CSV video ID, validates fields and media paths, and uses the
+real `ffprobe` and `ffmpeg` binaries to retain only videos whose first audio
+stream can decode at least one frame. Each probe has a 30-second timeout.
+Install FFmpeg and ensure both binaries are available in `PATH` before
+conversion. The printed JSON reports
 input, kept, dropped-by-reason, answer, output, and unique-video audio statistics
 for each split. `dropped` counts QA records; `audio` counts unique videos, so
 multiple questions for one rejected video increase the former but not the
@@ -404,7 +406,14 @@ pip install -e ".[audio]"
 FFmpeg must also be available on every worker for video/audio decoding and for the dataset conversion step described above.
 
 > [!NOTE]
-> TorchCodec is strongly recommended for the NExT-QA NPU recipe. On a 320-core host, we observed stable decoding with TorchCodec, while the torchvision/PyAV fallback path showed severe transient native-thread growth and could fail with `Resource temporarily unavailable` during video decoding.
+> The NExT-QA launcher selects TorchCodec by default with
+> `FORCE_QWENVL_VIDEO_READER=torchcodec`. On a 320-core host, we observed stable
+> decoding with TorchCodec, while the torchvision/PyAV fallback path showed
+> severe transient native-thread growth and could fail with
+> `Resource temporarily unavailable` during video decoding. The launcher also
+> defaults `OMP_NUM_THREADS`, `TQ_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, and
+> `MKL_NUM_THREADS` to 8 and uses 8 prompt-filter workers; explicitly override
+> these values only after validating the host's process and thread limits.
 >
 > For PyTorch 2.10 on Ascend/NPU, TorchCodec 0.10 can be built without CUDA support:
 >

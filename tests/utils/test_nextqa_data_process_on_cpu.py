@@ -15,6 +15,7 @@
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -236,6 +237,73 @@ def test_convert_split_filters_audio_failures_and_caches_unique_videos(tmp_path,
         "output": str(output_path.resolve()),
     }
     assert {row["extra_info"]["video_id"] for row in pq.read_table(output_path).to_pylist()} == {"1"}
+
+
+def test_probe_audio_stream_checks_metadata_and_decodes_one_audio_frame(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        stdout = "0\n" if command[0] == "ffprobe" else ""
+        return SimpleNamespace(returncode=0, stdout=stdout)
+
+    monkeypatch.setattr(nextqa.subprocess, "run", fake_run)
+
+    assert nextqa.probe_audio_stream("video.mp4") is None
+    assert [command[0] for command, _kwargs in calls] == ["ffprobe", "ffmpeg"]
+    assert all(kwargs["timeout"] == nextqa.MEDIA_PROBE_TIMEOUT_SECONDS for _command, kwargs in calls)
+    assert calls[1][0][-6:] == ["0:a:0", "-frames:a", "1", "-f", "null", "-"]
+
+
+def test_probe_audio_stream_does_not_decode_when_audio_stream_is_missing(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(nextqa.subprocess, "run", fake_run)
+
+    assert nextqa.probe_audio_stream("video.mp4") == "missing_audio_stream"
+    assert [command[0] for command in calls] == ["ffprobe"]
+
+
+@pytest.mark.parametrize("failure_site", ["ffprobe", "ffmpeg"])
+def test_probe_audio_stream_maps_timeout_to_invalid_media(monkeypatch, failure_site):
+    def fake_run(command, **kwargs):
+        if command[0] == failure_site:
+            raise nextqa.subprocess.TimeoutExpired(command, kwargs["timeout"])
+        return SimpleNamespace(returncode=0, stdout="0\n")
+
+    monkeypatch.setattr(nextqa.subprocess, "run", fake_run)
+
+    assert nextqa.probe_audio_stream("video.mp4") == "invalid_media"
+
+
+@pytest.mark.parametrize("failure_site", ["ffprobe", "ffmpeg"])
+def test_probe_audio_stream_maps_process_failure_to_invalid_media(monkeypatch, failure_site):
+    def fake_run(command, **kwargs):
+        return SimpleNamespace(
+            returncode=1 if command[0] == failure_site else 0,
+            stdout="0\n",
+        )
+
+    monkeypatch.setattr(nextqa.subprocess, "run", fake_run)
+
+    assert nextqa.probe_audio_stream("video.mp4") == "invalid_media"
+
+
+@pytest.mark.parametrize("missing_binary", ["ffprobe", "ffmpeg"])
+def test_probe_audio_stream_reports_missing_binary(monkeypatch, missing_binary):
+    def fake_run(command, **kwargs):
+        if command[0] == missing_binary:
+            raise FileNotFoundError(command[0])
+        return SimpleNamespace(returncode=0, stdout="0\n")
+
+    monkeypatch.setattr(nextqa.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match=rf"{missing_binary} is required"):
+        nextqa.probe_audio_stream("video.mp4")
 
 
 def test_resolve_video_path_handles_extension_and_rejects_escape(tmp_path):
