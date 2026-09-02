@@ -29,6 +29,7 @@ ROLLOUT_TP=${ROLLOUT_TP:-2}
 TOTAL_TRAINING_STEPS=${TOTAL_TRAINING_STEPS:-200}
 USE_AUDIO_IN_VIDEO=${USE_AUDIO_IN_VIDEO:-true}
 FILTER_OVERLONG_PROMPTS_WORKERS=${FILTER_OVERLONG_PROMPTS_WORKERS:-8}
+LOG_FILE=${LOG_FILE:-run_qwen3omni_npu_nextqa_v1.log}
 TOTAL_NPUS=$((N_GPUS_PER_NODE * NNODES))
 
 if (( TOTAL_NPUS % ROLLOUT_TP != 0 )); then
@@ -122,4 +123,4 @@ python3 -m verl_omni.trainer.main_omni \
     trainer.total_epochs=10 \
     trainer.total_training_steps=${TOTAL_TRAINING_STEPS} \
     "$@" \
-    2>&1 | tee run_qwen3omni_npu_nextqa_v1.log
+    2>&1 | tee "${LOG_FILE}"
