@@ -20,7 +20,10 @@ git pull
 bash npu_test/run_nextqa_pearson_matrix.sh
 ```
 
-The default matrix runs four independent one-step jobs with the same seed:
+The default matrix runs four independent one-step jobs with the same seed. To
+avoid decoding the complete NExT-QA train and validation sets before every
+case, it selects 64 train samples and 8 validation samples before applying the
+exact multimodal length filter:
 
 | Case | Change from the current recipe | What an improvement isolates |
 | --- | --- | --- |
@@ -43,6 +46,8 @@ Useful environment overrides are:
 
 ```bash
 DIAG_TRAIN_BATCH_SIZE=8 \
+DIAG_TRAIN_MAX_SAMPLES=64 \
+DIAG_VAL_MAX_SAMPLES=8 \
 DIAG_MAX_RESPONSE_LENGTH=1024 \
 DIAG_TOTAL_STEPS=1 \
 RESULT_DIR=/absolute/path/to/results \
@@ -51,7 +56,8 @@ bash npu_test/run_nextqa_pearson_matrix.sh baseline no_audio eager no_rmpad
 
 All ordinary launcher variables (`MODEL_PATH`, `TRAIN_FILE`, `VAL_FILE`,
 `N_GPUS_PER_NODE`, `NNODES`, and `ASCEND_HOME_PATH`) are preserved. Use
-absolute paths when overriding them.
+absolute paths when overriding them. The sample caps apply only to this
+diagnostic runner; the normal training launcher still uses the full datasets.
 
 Each case writes `run.log` and `exit_code.txt`. The runner also creates
 `environment.txt` and `summary.csv` under the result directory. To summarize

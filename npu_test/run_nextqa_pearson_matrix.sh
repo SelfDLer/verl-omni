@@ -15,6 +15,8 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 RESULT_DIR=${RESULT_DIR:-"${SCRIPT_DIR}/results/${TIMESTAMP}"}
 DIAG_TOTAL_STEPS=${DIAG_TOTAL_STEPS:-1}
 DIAG_TRAIN_BATCH_SIZE=${DIAG_TRAIN_BATCH_SIZE:-8}
+DIAG_TRAIN_MAX_SAMPLES=${DIAG_TRAIN_MAX_SAMPLES:-64}
+DIAG_VAL_MAX_SAMPLES=${DIAG_VAL_MAX_SAMPLES:-8}
 DIAG_MAX_RESPONSE_LENGTH=${DIAG_MAX_RESPONSE_LENGTH:-1024}
 BASE_ROLLOUT_TP=${ROLLOUT_TP:-2}
 
@@ -33,6 +35,8 @@ fi
     echo "cases=${CASES[*]}"
     echo "diag_total_steps=${DIAG_TOTAL_STEPS}"
     echo "diag_train_batch_size=${DIAG_TRAIN_BATCH_SIZE}"
+    echo "diag_train_max_samples=${DIAG_TRAIN_MAX_SAMPLES}"
+    echo "diag_val_max_samples=${DIAG_VAL_MAX_SAMPLES}"
     echo "diag_max_response_length=${DIAG_MAX_RESPONSE_LENGTH}"
     echo "base_rollout_tp=${BASE_ROLLOUT_TP}"
     python3 --version
@@ -41,6 +45,8 @@ fi
 
 COMMON_OVERRIDES=(
     "data.train_batch_size=${DIAG_TRAIN_BATCH_SIZE}"
+    "data.train_max_samples=${DIAG_TRAIN_MAX_SAMPLES}"
+    "data.val_max_samples=${DIAG_VAL_MAX_SAMPLES}"
     "data.max_response_length=${DIAG_MAX_RESPONSE_LENGTH}"
     "actor_rollout_ref.actor.ppo_mini_batch_size=${DIAG_TRAIN_BATCH_SIZE}"
     "trainer.val_before_train=false"

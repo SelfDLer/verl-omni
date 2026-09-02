@@ -64,3 +64,16 @@ def test_nextqa_npu_launcher_wires_video_gspo_training():
     assert all(setting in launcher for setting in required_environment)
     assert "data.filter_overlong_prompts_workers=64" not in launcher
     assert "models.transformers" not in launcher
+
+
+def test_nextqa_npu_pearson_matrix_caps_samples_before_filtering():
+    repo_root = Path(__file__).parents[2]
+    matrix = (repo_root / "npu_test" / "run_nextqa_pearson_matrix.sh").read_text(encoding="utf-8")
+
+    required_settings = (
+        "DIAG_TRAIN_MAX_SAMPLES=${DIAG_TRAIN_MAX_SAMPLES:-64}",
+        "DIAG_VAL_MAX_SAMPLES=${DIAG_VAL_MAX_SAMPLES:-8}",
+        '"data.train_max_samples=${DIAG_TRAIN_MAX_SAMPLES}"',
+        '"data.val_max_samples=${DIAG_VAL_MAX_SAMPLES}"',
+    )
+    assert all(setting in matrix for setting in required_settings)
