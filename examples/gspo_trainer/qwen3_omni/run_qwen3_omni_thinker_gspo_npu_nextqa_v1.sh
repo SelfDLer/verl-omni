@@ -19,9 +19,9 @@ ASCEND_HOME_PATH=${ASCEND_HOME_PATH:-/usr/local/Ascend/cann-9.0.0}
 source "${ASCEND_HOME_PATH}/set_env.sh"
 source "${ASCEND_HOME_PATH}/../nnal/atb/set_env.sh"
 
-MODEL_PATH=${MODEL_PATH:-"Qwen/Qwen3-Omni-30B-A3B-Instruct"}
-TRAIN_FILE=${TRAIN_FILE:-"$HOME/data/nextqa/train.parquet"}
-VAL_FILE=${VAL_FILE:-"$HOME/data/nextqa/validation.parquet"}
+MODEL_PATH=${MODEL_PATH:-"/mnt/share/z00988734/src/weight/Qwen3-Omni-30B-A3B-Instruct"}
+TRAIN_FILE=${TRAIN_FILE:-"/mnt/share/z00988734/src/datasets/NextQA/train.parquet"}
+VAL_FILE=${VAL_FILE:-"/mnt/share/z00988734/src/datasets/NextQA/validation.parquet"}
 
 N_GPUS_PER_NODE=${N_GPUS_PER_NODE:-16}
 NNODES=${NNODES:-1}
