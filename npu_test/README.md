@@ -102,3 +102,59 @@ routes, but actor-side routing replay is currently wired for Megatron and
 VeOmni rather than this recipe's FSDP2 actor. Enabling rollout route capture
 alone therefore cannot make FSDP2 reproduce the rollout route; it is useful
 as a follow-up diagnostic, not a complete fix.
+
+## Reduced-layer checkpoints
+
+`reduce_qwen3_omni_layers.py` creates a smaller diagnostic checkpoint by
+keeping only the first N Thinker text-decoder layers. It deliberately keeps
+the complete audio tower, vision tower, Talker, code2wav, embeddings, and
+output head. This makes the resulting model suitable for the same multimodal
+actor/rollout path while reducing the part most useful for layer-by-layer and
+operator-level comparisons.
+
+First validate the source config and weight index without writing data:
+
+```bash
+python3 npu_test/reduce_qwen3_omni_layers.py \
+  --source /mnt/share/z00988734/src/weight/Qwen3-Omni-30B-A3B-Instruct \
+  --output /mnt/share/z00988734/src/weight/Qwen3-Omni-30B-A3B-Instruct-4L \
+  --num-layers 4 \
+  --dry-run
+```
+
+Then create the checkpoint by removing `--dry-run`:
+
+```bash
+python3 npu_test/reduce_qwen3_omni_layers.py \
+  --source /mnt/share/z00988734/src/weight/Qwen3-Omni-30B-A3B-Instruct \
+  --output /mnt/share/z00988734/src/weight/Qwen3-Omni-30B-A3B-Instruct-4L \
+  --num-layers 4
+```
+
+Unchanged files and complete shards are hard-linked when the source and output
+are on the same filesystem; mixed shards are rewritten and fully removed
+shards are omitted. Add `--copy-unchanged` if the output must not share hard
+links with the source. The command refuses to overwrite an existing output
+directory and builds through a temporary sibling directory, so an interrupted
+run cannot leave a checkpoint that looks complete.
+
+To prepare a prefix sweep for locating the first divergent layer:
+
+```bash
+for layers in 1 2 4 8 16; do
+  python3 npu_test/reduce_qwen3_omni_layers.py \
+    --source /mnt/share/z00988734/src/weight/Qwen3-Omni-30B-A3B-Instruct \
+    --output "/mnt/share/z00988734/src/weight/Qwen3-Omni-30B-A3B-Instruct-${layers}L" \
+    --num-layers "${layers}"
+done
+```
+
+Every output contains `layer_reduction_manifest.json`, recording the exact
+kept layers, key counts, tensor size, and whether each shard was linked,
+copied, or rewritten. Run a reduced checkpoint with the existing diagnostic
+matrix by overriding only the model path:
+
+```bash
+MODEL_PATH=/mnt/share/z00988734/src/weight/Qwen3-Omni-30B-A3B-Instruct-4L \
+  bash npu_test/run_nextqa_pearson_matrix.sh baseline
+```
