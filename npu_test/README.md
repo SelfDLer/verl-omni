@@ -48,9 +48,11 @@ bash npu_test/run_nextqa_pearson_matrix.sh eager no_rmpad no_audio_eager
 `no_init_sync` is diagnostic-only. Both actor and rollout initially load the
 same checkpoint. This case skips both the first rollout sleep and the first
 actor-to-rollout reload, because vLLM-Ascend cannot safely execute after
-sleeping and waking the checkpoint-loaded state without a weight reload. Normal
-training and every other case retain the standard initial and per-step
-sleep/reload lifecycle.
+sleeping and waking the checkpoint-loaded state without a weight reload. It
+still marks the untouched rollout checkpoint as model version 0; this metadata
+is required for trajectory staleness metrics but does not transfer or reload
+any tensors. Normal training and every other case retain the standard initial
+and per-step sleep/reload lifecycle.
 
 Useful environment overrides are:
 
