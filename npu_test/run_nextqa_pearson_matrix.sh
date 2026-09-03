@@ -19,13 +19,14 @@ DIAG_TRAIN_MAX_SAMPLES=${DIAG_TRAIN_MAX_SAMPLES:-64}
 DIAG_VAL_MAX_SAMPLES=${DIAG_VAL_MAX_SAMPLES:-8}
 DIAG_MAX_RESPONSE_LENGTH=${DIAG_MAX_RESPONSE_LENGTH:-1024}
 BASE_ROLLOUT_TP=${ROLLOUT_TP:-2}
+BASE_EXTERNAL_MODULES=${VERL_USE_EXTERNAL_MODULES:-verl_omni}
 
 mkdir -p "${RESULT_DIR}"
 
 if (( $# > 0 )); then
     CASES=("$@")
 else
-    CASES=(baseline no_audio eager no_rmpad)
+    CASES=(baseline no_audio no_init_sync tp4 low_concurrency batch_invariant)
 fi
 
 {
@@ -54,6 +55,7 @@ COMMON_OVERRIDES=(
     "trainer.test_freq=-1"
     "trainer.total_epochs=1"
     "trainer.total_training_steps=${DIAG_TOTAL_STEPS}"
+    "trainer.resume_mode=disable"
     'trainer.logger=["console"]'
 )
 
@@ -62,6 +64,7 @@ overall_status=0
 for case_name in "${CASES[@]}"; do
     use_audio=true
     rollout_tp=${BASE_ROLLOUT_TP}
+    external_modules=${BASE_EXTERNAL_MODULES}
     case_overrides=()
 
     case "${case_name}" in
@@ -76,15 +79,27 @@ for case_name in "${CASES[@]}"; do
         no_rmpad)
             case_overrides+=("actor_rollout_ref.model.use_remove_padding=false")
             ;;
+        no_init_sync)
+            external_modules="${BASE_EXTERNAL_MODULES},npu_test.skip_initial_weight_sync"
+            case_overrides+=("trainer.v1.trainer_mode=omni_sync_skip_initial_weight_sync")
+            ;;
         tp4)
             rollout_tp=4
+            ;;
+        low_concurrency)
+            case_overrides+=("actor_rollout_ref.rollout.max_num_seqs=8")
+            ;;
+        batch_invariant)
+            case_overrides+=("actor_rollout_ref.rollout.full_determinism=true")
             ;;
         no_audio_eager)
             use_audio=false
             case_overrides+=("actor_rollout_ref.rollout.enforce_eager=true")
             ;;
         *)
-            echo "Unknown case '${case_name}'. Valid cases: baseline no_audio eager no_rmpad tp4 no_audio_eager" >&2
+            echo "Unknown case '${case_name}'." >&2
+            echo "Valid cases: baseline no_audio eager no_rmpad no_init_sync tp4" >&2
+            echo "             low_concurrency batch_invariant no_audio_eager" >&2
             overall_status=2
             continue
             ;;
@@ -100,6 +115,7 @@ for case_name in "${CASES[@]}"; do
         cd "${REPO_ROOT}"
         USE_AUDIO_IN_VIDEO=${use_audio} \
         ROLLOUT_TP=${rollout_tp} \
+        VERL_USE_EXTERNAL_MODULES=${external_modules} \
         TOTAL_TRAINING_STEPS=${DIAG_TOTAL_STEPS} \
         LOG_FILE="${log_file}" \
         bash "${TRAIN_SCRIPT}" \
