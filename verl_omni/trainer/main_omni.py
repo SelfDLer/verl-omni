@@ -348,6 +348,18 @@ def run_omni(config, task_runner_class=None) -> None:
     # explicitly because a Ray cluster may have been started before the launch
     # shell exported VERL_USE_EXTERNAL_MODULES.
     _forward_external_modules_to_ray(config)
+    if uses_v1_trainer(config):
+        from verl.trainer.main_ppo import TaskRunnerV1, run_ppo
+
+        config.trainer.use_v1 = True
+        if task_runner_class is None:
+            task_runner_class = TaskRunnerV1
+        run_ppo(config, task_runner_class=task_runner_class)
+        return
+
+    if task_runner_class is None:
+        task_runner_class = ray.remote(num_cpus=1)(RayTrainerTaskRunner)
+    launch_ray_task_runner(config, task_runner_class)
 
 
 
