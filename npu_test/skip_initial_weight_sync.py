@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Diagnostic V1 trainer that keeps vLLM-Omni's checkpoint-loaded state."""
+"""Diagnostic V1 trainers that split initial rollout sleep from weight reload."""
 
 import logging
 from unittest.mock import patch
@@ -41,6 +41,16 @@ def _set_rollout_global_steps(manager, global_steps):
     ray.get(object_refs)
 
 
+def _require_awake_reload_config(trainer):
+    """Reject an implicit wake while diagnosing reload on an awake rollout."""
+    if trainer.config.actor_rollout_ref.rollout.free_cache_engine:
+        raise ValueError(
+            "omni_sync_skip_initial_sleep requires "
+            "actor_rollout_ref.rollout.free_cache_engine=false so the initial "
+            "weight update does not call wake_up on an already-awake rollout"
+        )
+
+
 @register_trainer("omni_sync_skip_initial_weight_sync")
 class OmniPPOTrainerSkipInitialWeightSync(OmniPPOTrainerSync):
     """Generate once from the rollout's untouched checkpoint-loaded state."""
@@ -60,3 +70,17 @@ class OmniPPOTrainerSkipInitialWeightSync(OmniPPOTrainerSync):
             self.global_steps,
         )
         _set_rollout_global_steps(self.checkpoint_manager, self.global_steps)
+
+
+@register_trainer("omni_sync_skip_initial_sleep")
+class OmniPPOTrainerSkipInitialSleep(OmniPPOTrainerSync):
+    """Reload actor weights into the checkpoint-loaded rollout without sleeping it first."""
+
+    def init(self):
+        # Unlike OmniPPOTrainerSkipInitialWeightSync, keep the inherited
+        # PPOTrainerSync.on_init_end() call. This leaves the rollout allocations
+        # untouched until actor->rollout reload, isolating reload/repack from the
+        # preceding sleep/discard/wake lifecycle.
+        _require_awake_reload_config(self)
+        with patch.object(CheckpointEngineManager, "sleep_replicas", _skip_initial_sleep):
+            super().init()

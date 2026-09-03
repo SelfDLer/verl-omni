@@ -12,11 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
+
+import pytest
 
 from verl.checkpoint_engine import CheckpointEngineManager
 
-from npu_test.skip_initial_weight_sync import OmniPPOTrainerSkipInitialWeightSync
+from npu_test.skip_initial_weight_sync import (
+    OmniPPOTrainerSkipInitialSleep,
+    OmniPPOTrainerSkipInitialWeightSync,
+)
 
 
 def test_skip_initial_weight_sync_keeps_checkpoint_loaded_rollout_awake():
@@ -44,4 +50,39 @@ def test_skip_initial_weight_sync_sets_version_without_reloading_weights():
 
     server.set_global_steps.remote.assert_called_once_with(0)
     ray_get.assert_called_once_with(["set-version-ref"])
+    trainer.checkpoint_manager.update_weights.assert_not_called()
+
+
+def _awake_reload_trainer(*, free_cache_engine):
+    trainer = object.__new__(OmniPPOTrainerSkipInitialSleep)
+    trainer.config = SimpleNamespace(
+        actor_rollout_ref=SimpleNamespace(
+            rollout=SimpleNamespace(free_cache_engine=free_cache_engine),
+        )
+    )
+    trainer.global_steps = 0
+    trainer.checkpoint_manager = Mock()
+    trainer._setup = Mock(side_effect=lambda: CheckpointEngineManager.sleep_replicas(trainer.checkpoint_manager))
+    return trainer
+
+
+def test_skip_initial_sleep_still_reloads_actor_weights():
+    trainer = _awake_reload_trainer(free_cache_engine=False)
+    original_sleep = CheckpointEngineManager.sleep_replicas
+
+    trainer.init()
+
+    trainer._setup.assert_called_once_with()
+    trainer.checkpoint_manager.sleep_replicas.assert_not_called()
+    trainer.checkpoint_manager.update_weights.assert_called_once_with(0)
+    assert CheckpointEngineManager.sleep_replicas is original_sleep
+
+
+def test_skip_initial_sleep_rejects_implicit_wake_of_awake_rollout():
+    trainer = _awake_reload_trainer(free_cache_engine=True)
+
+    with pytest.raises(ValueError, match="free_cache_engine=false"):
+        trainer.init()
+
+    trainer._setup.assert_not_called()
     trainer.checkpoint_manager.update_weights.assert_not_called()

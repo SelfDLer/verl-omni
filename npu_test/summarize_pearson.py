@@ -73,6 +73,8 @@ def main() -> int:
         pearson = finite(parsed[METRICS[0]])
         diff_mean = finite(parsed[METRICS[1]])
         diff_max = finite(parsed[METRICS[2]])
+        diff_std = finite(parsed[METRICS[3]])
+        log_ppl_diff = finite(parsed[METRICS[4]])
         rows.append(
             {
                 "case": case_name(log, args.path),
@@ -83,6 +85,8 @@ def main() -> int:
                 "pearson_max": max(pearson) if pearson else None,
                 "prob_diff_mean_last": diff_mean[-1] if diff_mean else None,
                 "prob_diff_max_last": diff_max[-1] if diff_max else None,
+                "prob_diff_std_last": diff_std[-1] if diff_std else None,
+                "log_ppl_diff_last": log_ppl_diff[-1] if log_ppl_diff else None,
                 "log": str(log),
             }
         )
@@ -96,6 +100,8 @@ def main() -> int:
         "pearson_max",
         "prob_diff_mean_last",
         "prob_diff_max_last",
+        "prob_diff_std_last",
+        "log_ppl_diff_last",
     )
     print("| " + " | ".join(headers) + " |")
     print("| " + " | ".join("---" for _ in headers) + " |")

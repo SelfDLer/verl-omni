@@ -37,13 +37,24 @@ exact multimodal length filter:
 Previously tested or optional cases remain available:
 
 ```bash
-bash npu_test/run_nextqa_pearson_matrix.sh eager no_rmpad no_audio_eager
+bash npu_test/run_nextqa_pearson_matrix.sh eager no_rmpad no_audio_eager \
+  no_init_sync_eager no_sleep_no_reload no_sleep_no_reload_eager \
+  no_sleep_reload no_sleep_reload_eager
 ```
 
 - `eager` disables graph execution.
 - `no_rmpad` disables actor-side remove-padding.
 - `no_audio_eager` checks for an interaction between audio inputs and graph
   execution.
+- `no_sleep_no_reload` and `no_sleep_reload` both keep rollout allocations awake
+  and set `free_cache_engine=false`, so the reload path cannot call
+  `wake_up(tags=["weights"])` on an already-awake engine. The former keeps the
+  checkpoint weights and the latter performs the normal actor-to-rollout reload;
+  their difference isolates actor export plus rollout reload/repack.
+- `no_sleep_no_reload_eager` and `no_sleep_reload_eager` repeat the matched
+  no-reload/reload pair without graph execution, separating tensor/layout
+  errors from stale graph-visible storage. `no_init_sync_eager` remains the
+  direct eager counterpart of the original `no_init_sync` case.
 
 `no_init_sync` is diagnostic-only. Both actor and rollout initially load the
 same checkpoint. This case skips both the first rollout sleep and the first
@@ -53,6 +64,20 @@ still marks the untouched rollout checkpoint as model version 0; this metadata
 is required for trajectory staleness metrics but does not transfer or reload
 any tensors. Normal training and every other case retain the standard initial
 and per-step sleep/reload lifecycle.
+
+For the focused follow-up after `baseline` versus `no_init_sync` diverges, run:
+
+```bash
+bash npu_test/run_nextqa_pearson_matrix.sh \
+  baseline eager no_sleep_no_reload no_sleep_no_reload_eager \
+  no_sleep_reload no_sleep_reload_eager
+```
+
+`no_sleep_reload*` keeps the checkpoint-loaded rollout and actor weight gather
+resident simultaneously. If the full checkpoint runs out of NPU memory, repeat
+those cases with a reduced-layer checkpoint; treat OOM as inconclusive rather
+than as a parity result. `no_sleep_no_reload` should first reproduce
+`no_init_sync`; otherwise `free_cache_engine` itself is a confounding variable.
 
 Useful environment overrides are:
 
@@ -90,6 +115,13 @@ Please return `summary.csv`, `environment.txt`, and any failed case's final
   multimodal preprocessing, and audio-aware RoPE indices.
 - `no_init_sync` reaches `>0.99`: inspect the NPU initial sleep, layerwise
   reload, weight-name mapping, and post-load processing.
+- `no_sleep_no_reload` first reproduces `no_init_sync`, and `no_sleep_reload`
+  stays close to it: the initial sleep/discard/wake lifecycle is the leading
+  cause. If reload instead falls back to `baseline`, actor export or rollout
+  reload/repack is the leading cause.
+- Only `no_sleep_reload_eager` improves: reload leaves graph-visible storage or
+  captured addresses stale. If eager does not improve it, inspect tensor values,
+  packed-weight mapping, and MoE layout first.
 - `low_concurrency` or `batch_invariant` reaches `>0.99`: inspect
   batch-shape-dependent fused kernels or scheduling.
 - `eager` reaches `>0.99`: inspect graph-mode kernels and fused MoE execution.

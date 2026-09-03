@@ -88,11 +88,27 @@ def test_nextqa_npu_pearson_matrix_has_weight_and_batch_ablation_cases():
         "CASES=(baseline no_audio no_init_sync tp4 low_concurrency batch_invariant)",
         'external_modules="${BASE_EXTERNAL_MODULES},npu_test.skip_initial_weight_sync"',
         '"trainer.v1.trainer_mode=omni_sync_skip_initial_weight_sync"',
+        '"trainer.v1.trainer_mode=omni_sync_skip_initial_sleep"',
+        '"actor_rollout_ref.rollout.free_cache_engine=false"',
         '"trainer.resume_mode=disable"',
         '"actor_rollout_ref.rollout.max_num_seqs=8"',
         '"actor_rollout_ref.rollout.full_determinism=true"',
     )
     assert all(setting in matrix for setting in required_settings)
+
+
+def test_nextqa_npu_pearson_matrix_has_initial_lifecycle_cross_cases():
+    repo_root = Path(__file__).parents[2]
+    matrix = (repo_root / "npu_test" / "run_nextqa_pearson_matrix.sh").read_text(encoding="utf-8")
+
+    for case_name in (
+        "no_init_sync_eager",
+        "no_sleep_no_reload",
+        "no_sleep_no_reload_eager",
+        "no_sleep_reload",
+        "no_sleep_reload_eager",
+    ):
+        assert f"        {case_name})" in matrix
 
 
 def test_nextqa_npu_pearson_matrix_captures_each_case_log_itself():

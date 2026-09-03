@@ -83,6 +83,33 @@ for case_name in "${CASES[@]}"; do
             external_modules="${BASE_EXTERNAL_MODULES},npu_test.skip_initial_weight_sync"
             case_overrides+=("trainer.v1.trainer_mode=omni_sync_skip_initial_weight_sync")
             ;;
+        no_init_sync_eager)
+            external_modules="${BASE_EXTERNAL_MODULES},npu_test.skip_initial_weight_sync"
+            case_overrides+=("trainer.v1.trainer_mode=omni_sync_skip_initial_weight_sync")
+            case_overrides+=("actor_rollout_ref.rollout.enforce_eager=true")
+            ;;
+        no_sleep_no_reload)
+            external_modules="${BASE_EXTERNAL_MODULES},npu_test.skip_initial_weight_sync"
+            case_overrides+=("trainer.v1.trainer_mode=omni_sync_skip_initial_weight_sync")
+            case_overrides+=("actor_rollout_ref.rollout.free_cache_engine=false")
+            ;;
+        no_sleep_no_reload_eager)
+            external_modules="${BASE_EXTERNAL_MODULES},npu_test.skip_initial_weight_sync"
+            case_overrides+=("trainer.v1.trainer_mode=omni_sync_skip_initial_weight_sync")
+            case_overrides+=("actor_rollout_ref.rollout.free_cache_engine=false")
+            case_overrides+=("actor_rollout_ref.rollout.enforce_eager=true")
+            ;;
+        no_sleep_reload)
+            external_modules="${BASE_EXTERNAL_MODULES},npu_test.skip_initial_weight_sync"
+            case_overrides+=("trainer.v1.trainer_mode=omni_sync_skip_initial_sleep")
+            case_overrides+=("actor_rollout_ref.rollout.free_cache_engine=false")
+            ;;
+        no_sleep_reload_eager)
+            external_modules="${BASE_EXTERNAL_MODULES},npu_test.skip_initial_weight_sync"
+            case_overrides+=("trainer.v1.trainer_mode=omni_sync_skip_initial_sleep")
+            case_overrides+=("actor_rollout_ref.rollout.free_cache_engine=false")
+            case_overrides+=("actor_rollout_ref.rollout.enforce_eager=true")
+            ;;
         tp4)
             rollout_tp=4
             ;;
@@ -98,8 +125,10 @@ for case_name in "${CASES[@]}"; do
             ;;
         *)
             echo "Unknown case '${case_name}'." >&2
-            echo "Valid cases: baseline no_audio eager no_rmpad no_init_sync tp4" >&2
-            echo "             low_concurrency batch_invariant no_audio_eager" >&2
+            echo "Valid cases: baseline no_audio eager no_rmpad no_init_sync no_init_sync_eager" >&2
+            echo "             no_sleep_no_reload no_sleep_no_reload_eager no_sleep_reload" >&2
+            echo "             no_sleep_reload_eager tp4 low_concurrency batch_invariant" >&2
+            echo "             no_audio_eager" >&2
             overall_status=2
             continue
             ;;
