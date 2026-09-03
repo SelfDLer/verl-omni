@@ -116,10 +116,14 @@ def test_nextqa_npu_pearson_matrix_captures_each_case_log_itself():
     matrix = (repo_root / "npu_test" / "run_nextqa_pearson_matrix.sh").read_text(encoding="utf-8")
 
     required_settings = (
+        'echo "[RUNNING] ${case_name}: audio=${use_audio}, rollout_tp=${rollout_tp}"',
+        'echo "          log=${log_file}"',
         "LOG_FILE=/dev/null",
-        ') 2>&1 | tee "${log_file}"',
-        'pipeline_status=("${PIPESTATUS[@]}")',
-        "case_status=${pipeline_status[0]}",
-        "tee_status=${pipeline_status[1]}",
+        "PYTHONUNBUFFERED=1",
+        ') >"${log_file}" 2>&1',
+        "case_status=$?",
+        'echo "[PASSED]  ${case_name}"',
+        'echo "[FAILED]  ${case_name}, exit_code=${case_status}"',
     )
     assert all(setting in matrix for setting in required_settings)
+    assert '| tee "${log_file}"' not in matrix
