@@ -102,6 +102,7 @@ def test_v1_adapter_forwards_qwen3_omni_audio_lengths_to_rope(monkeypatch):
     class Qwen3OmniMoeProcessor:
         def __init__(self):
             self.audio_seqlens = None
+            self.second_per_grids = None
             self.tokenizer = None
 
     class AgentLoopWorker:
@@ -129,9 +130,11 @@ def test_v1_adapter_forwards_qwen3_omni_audio_lengths_to_rope(monkeypatch):
         image_grid_thw=None,
         video_grid_thw=None,
         audio_seqlens=None,
+        second_per_grids=None,
     ):
         del attention_mask, image_grid_thw, video_grid_thw
         processor.audio_seqlens = audio_seqlens
+        processor.second_per_grids = second_per_grids
         _ = audio_seqlens[0]
         return torch.zeros((3, *input_ids.shape), dtype=torch.float32), torch.zeros((input_ids.shape[0], 1))
 
@@ -150,10 +153,15 @@ def test_v1_adapter_forwards_qwen3_omni_audio_lengths_to_rope(monkeypatch):
     )
     assert hasattr(configured, "get_rope_index_kwargs")
 
-    multi_modal_inputs = {"feature_attention_mask": torch.tensor([[1, 1, 1, 0]])}
+    video_second_per_grid = torch.tensor([0.5])
+    multi_modal_inputs = {
+        "feature_attention_mask": torch.tensor([[1, 1, 1, 0]]),
+        "video_second_per_grid": video_second_per_grid,
+    }
     extra_kwargs = configured.get_rope_index_kwargs(multi_modal_inputs)
     assert "audio_seqlens" in extra_kwargs
     torch.testing.assert_close(extra_kwargs["audio_seqlens"], torch.tensor([3]))
+    torch.testing.assert_close(extra_kwargs["second_per_grids"], video_second_per_grid)
 
     worker = AgentLoopWorker()
     worker.processor = configured
@@ -162,6 +170,38 @@ def test_v1_adapter_forwards_qwen3_omni_audio_lengths_to_rope(monkeypatch):
 
     worker._compute_position_ids(input_ids, attention_mask, multi_modal_inputs)
     torch.testing.assert_close(configured.audio_seqlens, torch.tensor([3]))
+    torch.testing.assert_close(configured.second_per_grids, video_second_per_grid)
+
+
+def test_v1_adapter_forwards_video_timing_to_rope_without_audio(monkeypatch):
+    """Video-only RoPE requires second_per_grids even when audio is absent."""
+    pytest.importorskip("transformers")
+    _require_version("transformers", "5.0.0")
+
+    from transformers import AutoConfig, AutoProcessor
+
+    processor = SimpleNamespace(tokenizer=None)
+    config = SimpleNamespace(
+        thinker_config=SimpleNamespace(vision_config=SimpleNamespace(spatial_merge_size=2)),
+        talker_config=SimpleNamespace(vision_start_token_id=104),
+    )
+    monkeypatch.setattr(AutoProcessor, "from_pretrained", lambda *args, **kwargs: processor)
+    monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *args, **kwargs: config)
+
+    configured = Qwen3OmniThinkerAdapter.configure_processor(
+        "/fake/qwen3-omni",
+        SimpleNamespace(trust_remote_code=False),
+    )
+    second_per_grids = torch.tensor([0.5])
+    extra_kwargs = configured.get_rope_index_kwargs(
+        {
+            "video_grid_thw": torch.tensor([[2, 8, 8]]),
+            "video_second_per_grid": second_per_grids,
+        }
+    )
+
+    assert "audio_seqlens" not in extra_kwargs
+    torch.testing.assert_close(extra_kwargs["second_per_grids"], second_per_grids)
 
 
 class _FusedMoEExperts(nn.Module):

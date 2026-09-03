@@ -102,12 +102,18 @@ class Qwen3OmniThinkerAdapter(OmniModelBase):
         processor.get_rope_index = types.MethodType(_get_rope_index_long, processor)
         processor.get_llm_pos_ids_for_vision = types.MethodType(model_cls.get_llm_pos_ids_for_vision, processor)
 
-        # Provide audio lengths to verl's generic V1 agent loop via get_rope_index_kwargs.
+        # Provide audio lengths and video timing to verl's generic V1 agent loop.
+        # Qwen3-Omni's video-only RoPE path indexes ``second_per_grids``;
+        # omitting it fails when use_audio_in_video is disabled.
         def _get_rope_index_kwargs(multi_modal_inputs: dict) -> dict:
+            rope_kwargs = {}
             feature_attention_mask = multi_modal_inputs.get("feature_attention_mask")
             if feature_attention_mask is not None:
-                return {"audio_seqlens": feature_attention_mask.sum(-1)}
-            return {}
+                rope_kwargs["audio_seqlens"] = feature_attention_mask.sum(-1)
+            video_second_per_grid = multi_modal_inputs.get("video_second_per_grid")
+            if video_second_per_grid is not None:
+                rope_kwargs["second_per_grids"] = video_second_per_grid
+            return rope_kwargs
 
         processor.get_rope_index_kwargs = _get_rope_index_kwargs
 
