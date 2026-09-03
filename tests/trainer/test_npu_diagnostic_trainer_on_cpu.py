@@ -1,13 +1,18 @@
 from unittest.mock import Mock
 
+from verl.checkpoint_engine import CheckpointEngineManager
+
 from npu_test.skip_initial_weight_sync import OmniPPOTrainerSkipInitialWeightSync
 
 
-def test_skip_initial_weight_sync_only_wakes_checkpoint_loaded_rollout():
+def test_skip_initial_weight_sync_keeps_checkpoint_loaded_rollout_awake():
     trainer = object.__new__(OmniPPOTrainerSkipInitialWeightSync)
-    trainer.checkpoint_manager = Mock()
+    manager = Mock()
+    original_sleep = CheckpointEngineManager.sleep_replicas
+    trainer._setup = Mock(side_effect=lambda: CheckpointEngineManager.sleep_replicas(manager))
 
-    trainer.on_init_end()
+    trainer.init()
 
-    trainer.checkpoint_manager.wake_up_replicas.assert_called_once_with()
-    trainer.checkpoint_manager.update_weights.assert_not_called()
+    trainer._setup.assert_called_once_with()
+    assert manager.mock_calls == []
+    assert CheckpointEngineManager.sleep_replicas is original_sleep

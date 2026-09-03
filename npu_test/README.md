@@ -29,7 +29,7 @@ exact multimodal length filter:
 | --- | --- | --- |
 | `baseline` | None | Reproduces the current value on the diagnostic batch |
 | `no_audio` | `use_audio_in_video=false` | Audio expansion, audio/video interleaving, or multimodal RoPE |
-| `no_init_sync` | Wake rollout without actor weight reload | Weight sync or post-load processing |
+| `no_init_sync` | Keep rollout in its initial checkpoint-loaded state | Initial sleep/reload lifecycle |
 | `tp4` | Change rollout tensor parallelism from 2 to 4 | Tensor-parallel or fused-MoE partitioning |
 | `low_concurrency` | Reduce vLLM `max_num_seqs` from 128 to 8 | Batch-shape-dependent vLLM/MoE execution |
 | `batch_invariant` | Enable vLLM batch-invariant deterministic execution | Dynamic batching or scheduling sensitivity |
@@ -46,9 +46,11 @@ bash npu_test/run_nextqa_pearson_matrix.sh eager no_rmpad no_audio_eager
   execution.
 
 `no_init_sync` is diagnostic-only. Both actor and rollout initially load the
-same checkpoint; this case wakes the rollout replicas without replacing their
-checkpoint-loaded weights. Normal training and every other case retain the
-standard initial and per-step actor-to-rollout synchronization.
+same checkpoint. This case skips both the first rollout sleep and the first
+actor-to-rollout reload, because vLLM-Ascend cannot safely execute after
+sleeping and waking the checkpoint-loaded state without a weight reload. Normal
+training and every other case retain the standard initial and per-step
+sleep/reload lifecycle.
 
 Useful environment overrides are:
 
@@ -82,8 +84,8 @@ Please return `summary.csv`, `environment.txt`, and any failed case's final
 
 - `no_audio` reaches `>0.99`: inspect the audio hop padding, vLLM-Omni
   multimodal preprocessing, and audio-aware RoPE indices.
-- `no_init_sync` reaches `>0.99`: inspect the NPU layerwise reload, weight-name
-  mapping, and post-load processing.
+- `no_init_sync` reaches `>0.99`: inspect the NPU initial sleep, layerwise
+  reload, weight-name mapping, and post-load processing.
 - `low_concurrency` or `batch_invariant` reaches `>0.99`: inspect
   batch-shape-dependent fused kernels or scheduling.
 - `eager` reaches `>0.99`: inspect graph-mode kernels and fused MoE execution.
