@@ -117,14 +117,20 @@ for case_name in "${CASES[@]}"; do
         ROLLOUT_TP=${rollout_tp} \
         VERL_USE_EXTERNAL_MODULES=${external_modules} \
         TOTAL_TRAINING_STEPS=${DIAG_TOTAL_STEPS} \
-        LOG_FILE="${log_file}" \
+        LOG_FILE=/dev/null \
         bash "${TRAIN_SCRIPT}" \
             "${COMMON_OVERRIDES[@]}" \
             "trainer.experiment_name=pearson_diag_${case_name}" \
             "${case_overrides[@]}"
-    )
-    case_status=$?
+    ) 2>&1 | tee "${log_file}"
+    pipeline_status=("${PIPESTATUS[@]}")
     set -e
+    case_status=${pipeline_status[0]}
+    tee_status=${pipeline_status[1]}
+    if (( tee_status != 0 )); then
+        echo "Failed to write case log '${log_file}' (tee exit code ${tee_status})." >&2
+        case_status=${tee_status}
+    fi
     echo "${case_status}" >"${case_dir}/exit_code.txt"
     if (( case_status != 0 )); then
         echo "Case '${case_name}' failed with exit code ${case_status}; continuing with the remaining cases." >&2

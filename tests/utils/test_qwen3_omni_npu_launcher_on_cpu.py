@@ -93,3 +93,17 @@ def test_nextqa_npu_pearson_matrix_has_weight_and_batch_ablation_cases():
         '"actor_rollout_ref.rollout.full_determinism=true"',
     )
     assert all(setting in matrix for setting in required_settings)
+
+
+def test_nextqa_npu_pearson_matrix_captures_each_case_log_itself():
+    repo_root = Path(__file__).parents[2]
+    matrix = (repo_root / "npu_test" / "run_nextqa_pearson_matrix.sh").read_text(encoding="utf-8")
+
+    required_settings = (
+        "LOG_FILE=/dev/null",
+        ') 2>&1 | tee "${log_file}"',
+        'pipeline_status=("${PIPESTATUS[@]}")',
+        "case_status=${pipeline_status[0]}",
+        "tee_status=${pipeline_status[1]}",
+    )
+    assert all(setting in matrix for setting in required_settings)

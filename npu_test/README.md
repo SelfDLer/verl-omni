@@ -71,7 +71,9 @@ All ordinary launcher variables (`MODEL_PATH`, `TRAIN_FILE`, `VAL_FILE`,
 absolute paths when overriding them. The sample caps apply only to this
 diagnostic runner; the normal training launcher still uses the full datasets.
 
-Each case writes `run.log` and `exit_code.txt`. The runner also creates
+Each case writes `run.log` and `exit_code.txt`. The matrix runner captures the
+outermost command output itself, so these logs do not depend on the training
+launcher's `LOG_FILE` surviving environment setup. The runner also creates
 `environment.txt` and `summary.csv` under the result directory. To summarize
 copied logs again:
 
