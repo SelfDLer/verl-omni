@@ -328,26 +328,8 @@ def uses_v1_trainer(config) -> bool:
     return not (sample_source == "offline" and trainer_type == "direct_preference")
 
 
-def _forward_external_modules_to_ray(config) -> None:
-    """Make process-local registrations available in newly started Ray workers."""
-    external_modules = os.environ.get("VERL_USE_EXTERNAL_MODULES", "").strip()
-    if not external_modules:
-        return
-    OmegaConf.update(
-        config,
-        "ray_kwargs.ray_init.runtime_env.env_vars.VERL_USE_EXTERNAL_MODULES",
-        external_modules,
-        merge=False,
-        force_add=True,
-    )
-
-
 def run_omni(config, task_runner_class=None) -> None:
     """Initialize Ray and run distributed Omni training."""
-    # Trainer and pipeline registries are process-local. Forward the module list
-    # explicitly because a Ray cluster may have been started before the launch
-    # shell exported VERL_USE_EXTERNAL_MODULES.
-    _forward_external_modules_to_ray(config)
     if uses_v1_trainer(config):
         from verl.trainer.main_ppo import TaskRunnerV1, run_ppo
 
@@ -360,7 +342,6 @@ def run_omni(config, task_runner_class=None) -> None:
     if task_runner_class is None:
         task_runner_class = ray.remote(num_cpus=1)(RayTrainerTaskRunner)
     launch_ray_task_runner(config, task_runner_class)
-
 
 
 @hydra.main(config_path="./config", config_name="omni_trainer", version_base=None)
