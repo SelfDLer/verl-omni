@@ -38,6 +38,7 @@ if (( TOTAL_NPUS % ROLLOUT_TP != 0 )); then
 fi
 
 python3 -m verl_omni.trainer.main_omni \
+    "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_USE_EXTERNAL_MODULES='${VERL_USE_EXTERNAL_MODULES}'" \
     data.train_files="${TRAIN_FILE}" \
     data.val_files="${VAL_FILE}" \
     data.train_batch_size=32 \

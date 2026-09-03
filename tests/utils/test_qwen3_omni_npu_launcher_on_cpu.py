@@ -56,6 +56,7 @@ def test_nextqa_npu_launcher_wires_video_gspo_training():
     assert all(setting in launcher for setting in required_settings)
     required_environment = (
         "export VERL_USE_EXTERNAL_MODULES=${VERL_USE_EXTERNAL_MODULES:-verl_omni}",
+        '"++ray_kwargs.ray_init.runtime_env.env_vars.VERL_USE_EXTERNAL_MODULES=\'${VERL_USE_EXTERNAL_MODULES}\'"',
         "export OMP_NUM_THREADS=${OMP_NUM_THREADS:-8}",
         "export TQ_NUM_THREADS=${TQ_NUM_THREADS:-8}",
         "export OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-8}",
