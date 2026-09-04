@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import warnings
@@ -30,7 +31,7 @@ DEFAULT_AUDIO_HOP_LENGTH = 160
 logger = logging.getLogger(__name__)
 
 
-def _debug_audio(stage: str, audios: list[Any] | None) -> None:
+def _debug_audio(stage: str, audios: list[Any] | None, sample_id: str | None = None) -> None:
     """Emit compact waveform statistics when explicitly enabled for parity debugging."""
     if os.getenv("VERL_QWEN3_OMNI_DEBUG_AUDIO") != "1" or audios is None:
         return
@@ -38,13 +39,15 @@ def _debug_audio(stage: str, audios: list[Any] | None) -> None:
         array = np.asarray(audio)
         tail = array[..., -DEFAULT_AUDIO_HOP_LENGTH :]
         logger.warning(
-            "qwen3_omni_audio stage=%s index=%d shape=%s dtype=%s length=%d "
-            "sum=%.9g abs_mean=%.9g tail160_sum=%.9g",
+            "qwen3_omni_audio stage=%s sample=%s index=%d shape=%s dtype=%s length=%d "
+            "remainder160=%d sum=%.9g abs_mean=%.9g tail160_sum=%.9g",
             stage,
+            sample_id or "unknown",
             index,
             tuple(array.shape),
             array.dtype,
             array.shape[-1] if array.ndim else 0,
+            array.shape[-1] % DEFAULT_AUDIO_HOP_LENGTH if array.ndim else 0,
             float(array.sum()) if array.size else 0.0,
             float(np.abs(array).mean()) if array.size else 0.0,
             float(tail.sum()) if tail.size else 0.0,
@@ -95,7 +98,9 @@ class QwenOmniRLHFDataset(RLHFDataset):
         except Exception as error:
             raise RuntimeError("Failed to process multimodal sample") from error
 
+        sample_id = hashlib.sha1(str(messages).encode("utf-8", "replace")).hexdigest()[:12]
+        _debug_audio("dataset_before_pad", audios, sample_id)
         if audios is not None:
             audios = [pad_audio_to_hop_multiple(a) for a in audios]
-        _debug_audio("dataset_after_pad", audios)
+        _debug_audio("dataset_after_pad", audios, sample_id)
         return images, videos, audios
