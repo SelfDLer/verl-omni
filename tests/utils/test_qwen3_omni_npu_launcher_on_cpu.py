@@ -56,7 +56,6 @@ def test_nextqa_npu_launcher_wires_video_gspo_training():
     assert all(setting in launcher for setting in required_settings)
     required_environment = (
         "export VERL_USE_EXTERNAL_MODULES=${VERL_USE_EXTERNAL_MODULES:-verl_omni}",
-        '"++ray_kwargs.ray_init.runtime_env.env_vars.VERL_USE_EXTERNAL_MODULES=\'${VERL_USE_EXTERNAL_MODULES}\'"',
         "export OMP_NUM_THREADS=${OMP_NUM_THREADS:-8}",
         "export TQ_NUM_THREADS=${TQ_NUM_THREADS:-8}",
         "export OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-8}",
@@ -88,6 +87,8 @@ def test_nextqa_npu_pearson_matrix_has_weight_and_batch_ablation_cases():
     required_settings = (
         "CASES=(baseline no_audio no_init_sync tp4 low_concurrency batch_invariant)",
         'external_modules="${BASE_EXTERNAL_MODULES},npu_test.skip_initial_weight_sync"',
+        '"++ray_kwargs.ray_init.runtime_env.env_vars.VERL_USE_EXTERNAL_MODULES=\\"${external_modules}\\""',
+        '"++ray_kwargs.ray_init.runtime_env.env_vars.PYTHONPATH=\\"${REPO_ROOT}:${PYTHONPATH:-}\\""',
         '"trainer.v1.trainer_mode=omni_sync_skip_initial_weight_sync"',
         '"trainer.v1.trainer_mode=omni_sync_skip_initial_sleep"',
         '"actor_rollout_ref.rollout.free_cache_engine=false"',

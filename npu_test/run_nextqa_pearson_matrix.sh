@@ -134,6 +134,12 @@ for case_name in "${CASES[@]}"; do
             ;;
     esac
 
+    # Explicitly propagate external modules and repository path to Ray workers.
+    case_overrides+=(
+        "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_USE_EXTERNAL_MODULES=\"${external_modules}\""
+        "++ray_kwargs.ray_init.runtime_env.env_vars.PYTHONPATH=\"${REPO_ROOT}:${PYTHONPATH:-}\""
+    )
+
     case_dir="${RESULT_DIR}/${case_name}"
     mkdir -p "${case_dir}"
     log_file="${case_dir}/run.log"
