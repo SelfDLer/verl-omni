@@ -47,10 +47,14 @@ bash npu_test/run_nextqa_pearson_matrix.sh eager no_rmpad no_audio_eager \
 - `no_audio_eager` checks for an interaction between audio inputs and graph
   execution.
 - `no_sleep_no_reload` and `no_sleep_reload` both keep rollout allocations awake
-  and set `free_cache_engine=false`, so the reload path cannot call
-  `wake_up(tags=["weights"])` on an already-awake engine. The former keeps the
-  checkpoint weights and the latter performs the normal actor-to-rollout reload;
-  their difference isolates actor export plus rollout reload/repack.
+  through generation and set `free_cache_engine=false`, so the initial reload
+  path cannot call `wake_up(tags=["weights"])` on an already-awake engine. The
+  former keeps the checkpoint weights and the latter performs the normal
+  actor-to-rollout reload; their difference isolates actor export plus rollout
+  reload/repack. After generation, both cases force a level-1 rollout sleep
+  before actor log-prob recomputation. The generated rollout probabilities are
+  already fixed at that point, so releasing rollout memory does not change the
+  Pearson comparison and avoids an unrelated colocated-memory OOM.
 - `no_sleep_no_reload_eager` and `no_sleep_reload_eager` repeat the matched
   no-reload/reload pair without graph execution, separating tensor/layout
   errors from stale graph-visible storage. `no_init_sync_eager` remains the
@@ -62,8 +66,9 @@ actor-to-rollout reload, because vLLM-Ascend cannot safely execute after
 sleeping and waking the checkpoint-loaded state without a weight reload. It
 still marks the untouched rollout checkpoint as model version 0; this metadata
 is required for trajectory staleness metrics but does not transfer or reload
-any tensors. Normal training and every other case retain the standard initial
-and per-step sleep/reload lifecycle.
+any tensors. After this initialization exception, `no_init_sync` resumes the
+standard per-step sleep/reload lifecycle; the normal training launcher is
+unchanged.
 
 For the focused follow-up after `baseline` versus `no_init_sync` diverges, run:
 
@@ -74,10 +79,13 @@ bash npu_test/run_nextqa_pearson_matrix.sh \
 ```
 
 `no_sleep_reload*` keeps the checkpoint-loaded rollout and actor weight gather
-resident simultaneously. If the full checkpoint runs out of NPU memory, repeat
-those cases with a reduced-layer checkpoint; treat OOM as inconclusive rather
-than as a parity result. `no_sleep_no_reload` should first reproduce
-`no_init_sync`; otherwise `free_cache_engine` itself is a confounding variable.
+resident simultaneously during the initial reload. If the full checkpoint runs
+out of NPU memory there, repeat those cases with a reduced-layer checkpoint;
+treat OOM as inconclusive rather than as a parity result. These cases are
+Pearson-only: they run exactly one step, skip the actor update and final weight
+sync, and release rollout memory before actor log-prob recomputation.
+`no_sleep_no_reload` should first reproduce `no_init_sync`; otherwise
+`free_cache_engine` itself is a confounding variable.
 
 Useful environment overrides are:
 

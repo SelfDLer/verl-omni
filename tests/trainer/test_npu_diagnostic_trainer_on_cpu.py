@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import pytest
 
@@ -21,7 +21,9 @@ from verl.checkpoint_engine import CheckpointEngineManager
 
 from npu_test.skip_initial_weight_sync import (
     OmniPPOTrainerSkipInitialSleep,
+    OmniPPOTrainerSkipInitialSleepPearsonOnly,
     OmniPPOTrainerSkipInitialWeightSync,
+    OmniPPOTrainerSkipInitialWeightSyncPearsonOnly,
 )
 
 
@@ -86,3 +88,40 @@ def test_skip_initial_sleep_rejects_implicit_wake_of_awake_rollout():
 
     trainer._setup.assert_not_called()
     trainer.checkpoint_manager.update_weights.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "trainer_cls",
+    (OmniPPOTrainerSkipInitialWeightSyncPearsonOnly, OmniPPOTrainerSkipInitialSleepPearsonOnly),
+)
+def test_pearson_only_diagnostic_sleeps_rollout_before_actor_log_prob(trainer_cls):
+    trainer = object.__new__(trainer_cls)
+    server = Mock()
+    server.wait_for_requests_to_drain.remote.return_value = "drain-ref"
+    server.collective_rpc.remote.return_value = "sleep-ref"
+    server.clear_kv_cache.remote.return_value = "clear-ref"
+    trainer.checkpoint_manager = Mock(replicas=[Mock(servers=[server])])
+
+    with patch("npu_test.skip_initial_weight_sync.ray.get") as ray_get:
+        trainer.on_sample_end()
+
+    assert ray_get.call_args_list == [call(["drain-ref"]), call(["sleep-ref"]), call(["clear-ref"])]
+    server.wait_for_requests_to_drain.remote.assert_called_once_with()
+    server.collective_rpc.remote.assert_called_once_with("sleep", kwargs={"level": 1})
+    server.clear_kv_cache.remote.assert_called_once_with()
+
+
+def test_pearson_only_diagnostic_skips_post_step_weight_sync():
+    trainer = object.__new__(OmniPPOTrainerSkipInitialSleepPearsonOnly)
+    trainer.checkpoint_manager = Mock()
+
+    trainer.on_step_end()
+
+    trainer.checkpoint_manager.update_weights.assert_not_called()
+
+
+def test_pearson_only_diagnostic_skips_actor_update():
+    trainer = object.__new__(OmniPPOTrainerSkipInitialSleepPearsonOnly)
+    batch = object()
+
+    assert trainer._update_actor(batch, metrics={}) is batch

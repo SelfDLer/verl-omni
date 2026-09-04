@@ -90,24 +90,28 @@ for case_name in "${CASES[@]}"; do
             ;;
         no_sleep_no_reload)
             external_modules="${BASE_EXTERNAL_MODULES},npu_test.skip_initial_weight_sync"
-            case_overrides+=("trainer.v1.trainer_mode=omni_sync_skip_initial_weight_sync")
+            case_overrides+=("trainer.v1.trainer_mode=omni_sync_skip_initial_weight_sync_pearson_only")
             case_overrides+=("actor_rollout_ref.rollout.free_cache_engine=false")
+            case_overrides+=("trainer.total_training_steps=1")
             ;;
         no_sleep_no_reload_eager)
             external_modules="${BASE_EXTERNAL_MODULES},npu_test.skip_initial_weight_sync"
-            case_overrides+=("trainer.v1.trainer_mode=omni_sync_skip_initial_weight_sync")
+            case_overrides+=("trainer.v1.trainer_mode=omni_sync_skip_initial_weight_sync_pearson_only")
             case_overrides+=("actor_rollout_ref.rollout.free_cache_engine=false")
+            case_overrides+=("trainer.total_training_steps=1")
             case_overrides+=("actor_rollout_ref.rollout.enforce_eager=true")
             ;;
         no_sleep_reload)
             external_modules="${BASE_EXTERNAL_MODULES},npu_test.skip_initial_weight_sync"
-            case_overrides+=("trainer.v1.trainer_mode=omni_sync_skip_initial_sleep")
+            case_overrides+=("trainer.v1.trainer_mode=omni_sync_skip_initial_sleep_pearson_only")
             case_overrides+=("actor_rollout_ref.rollout.free_cache_engine=false")
+            case_overrides+=("trainer.total_training_steps=1")
             ;;
         no_sleep_reload_eager)
             external_modules="${BASE_EXTERNAL_MODULES},npu_test.skip_initial_weight_sync"
-            case_overrides+=("trainer.v1.trainer_mode=omni_sync_skip_initial_sleep")
+            case_overrides+=("trainer.v1.trainer_mode=omni_sync_skip_initial_sleep_pearson_only")
             case_overrides+=("actor_rollout_ref.rollout.free_cache_engine=false")
+            case_overrides+=("trainer.total_training_steps=1")
             case_overrides+=("actor_rollout_ref.rollout.enforce_eager=true")
             ;;
         tp4)
