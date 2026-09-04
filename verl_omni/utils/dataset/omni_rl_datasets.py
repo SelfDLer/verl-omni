@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import warnings
 from typing import Any
 
@@ -25,6 +27,28 @@ from verl.utils.dataset.rl_dataset import RLHFDataset
 # Whisper mel-frame stride at 16kHz; keep in sync with the feature extractor's
 # hop_length so actor recompute and vllm-omni rollout frame audio identically.
 DEFAULT_AUDIO_HOP_LENGTH = 160
+logger = logging.getLogger(__name__)
+
+
+def _debug_audio(stage: str, audios: list[Any] | None) -> None:
+    """Emit compact waveform statistics when explicitly enabled for parity debugging."""
+    if os.getenv("VERL_QWEN3_OMNI_DEBUG_AUDIO") != "1" or audios is None:
+        return
+    for index, audio in enumerate(audios):
+        array = np.asarray(audio)
+        tail = array[..., -DEFAULT_AUDIO_HOP_LENGTH :]
+        logger.warning(
+            "qwen3_omni_audio stage=%s index=%d shape=%s dtype=%s length=%d "
+            "sum=%.9g abs_mean=%.9g tail160_sum=%.9g",
+            stage,
+            index,
+            tuple(array.shape),
+            array.dtype,
+            array.shape[-1] if array.ndim else 0,
+            float(array.sum()) if array.size else 0.0,
+            float(np.abs(array).mean()) if array.size else 0.0,
+            float(tail.sum()) if tail.size else 0.0,
+        )
 
 
 def pad_audio_to_hop_multiple(audio: np.ndarray, hop_length: int = DEFAULT_AUDIO_HOP_LENGTH) -> np.ndarray:
@@ -73,4 +97,5 @@ class QwenOmniRLHFDataset(RLHFDataset):
 
         if audios is not None:
             audios = [pad_audio_to_hop_multiple(a) for a in audios]
+        _debug_audio("dataset_after_pad", audios)
         return images, videos, audios

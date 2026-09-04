@@ -16,6 +16,8 @@ import os
 from typing import Any
 from uuid import uuid4
 
+import numpy as np
+
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput, register
 from verl.experimental.agent_loop.single_turn_agent_loop import SingleTurnAgentLoop
 from verl.utils.profiler import simple_timer
@@ -26,6 +28,27 @@ from verl_omni.pipelines.model_base import OmniRolloutPipelineBase
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
+
+
+def _debug_audio(stage: str, audios: Any) -> None:
+    """Emit compact rollout waveform statistics when explicitly enabled."""
+    if os.getenv("VERL_QWEN3_OMNI_DEBUG_AUDIO") != "1" or audios is None:
+        return
+    for index, audio in enumerate(audios):
+        array = np.asarray(audio)
+        tail = array[..., -160:]
+        logger.warning(
+            "qwen3_omni_audio stage=%s index=%d shape=%s dtype=%s length=%d "
+            "sum=%.9g abs_mean=%.9g tail160_sum=%.9g",
+            stage,
+            index,
+            tuple(array.shape),
+            array.dtype,
+            array.shape[-1] if array.ndim else 0,
+            float(array.sum()) if array.size else 0.0,
+            float(np.abs(array).mean()) if array.size else 0.0,
+            float(tail.sum()) if tail.size else 0.0,
+        )
 
 
 @register("omni_single_turn_agent")
@@ -149,6 +172,7 @@ class DiffusionSingleTurnAgentLoop(AgentLoopBase):
         images = multi_modal_data.get("images")
         videos = multi_modal_data.get("videos")
         audios = multi_modal_data.get("audios")
+        _debug_audio("rollout_after_decode", audios)
 
         # 2. build the initial prompt with Continuous Token
         self._assert_mm_supported(bool(multi_modal_data))
