@@ -12,14 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import importlib
 from types import SimpleNamespace
 from unittest.mock import sentinel
 
 import pytest
-import torch
 from verl.workers.rollout.vllm_rollout import bucketed_weight_transfer
 
+from verl_omni.workers.rollout.vllm_rollout import npu_utils as npu_utils_module
 from verl_omni.workers.rollout.vllm_rollout import utils as utils_module
 
 
@@ -32,28 +31,9 @@ def _make_worker(model, model_config):
     )
 
 
-def _patch_reload_hooks(monkeypatch, events):
-    reload_module = importlib.import_module("vllm.model_executor.model_loader.reload")
-    monkeypatch.setattr(
-        reload_module,
-        "initialize_layerwise_reload",
-        lambda model: events.append("initialize"),
-    )
-    monkeypatch.setattr(
-        reload_module,
-        "finalize_layerwise_reload",
-        lambda model, config: events.append("finalize"),
-    )
-    monkeypatch.setattr(
-        utils_module.torch.accelerator,
-        "synchronize",
-        lambda: events.append("synchronize"),
-    )
-
-
 def _patch_standard_reload_dependencies(monkeypatch, events):
-    patch_module = importlib.import_module("verl.utils.vllm.patch")
-    loader_utils = importlib.import_module("vllm.model_executor.model_loader.utils")
+    patch_module = __import__("verl.utils.vllm.patch", fromlist=["patch_vllm_moe_model_weight_loader"])
+    loader_utils = __import__("vllm.model_executor.model_loader.utils", fromlist=["process_weights_after_loading"])
     monkeypatch.setattr(
         patch_module,
         "patch_vllm_moe_model_weight_loader",
@@ -63,11 +43,6 @@ def _patch_standard_reload_dependencies(monkeypatch, events):
         loader_utils,
         "process_weights_after_loading",
         lambda model, config, device: events.append("process_after_loading"),
-    )
-    monkeypatch.setattr(
-        utils_module.torch.accelerator,
-        "synchronize",
-        lambda: events.append("synchronize"),
     )
 
 
@@ -85,40 +60,57 @@ def test_standard_vllm_bucket_reload_order_on_cpu(monkeypatch):
             for bucket in buckets:
                 on_bucket_received(bucket)
 
-    monkeypatch.setattr(
-        bucketed_weight_transfer,
-        "BucketedWeightReceiver",
-        FakeReceiver,
-    )
-    _patch_reload_hooks(monkeypatch, events)
+    monkeypatch.setattr(bucketed_weight_transfer, "BucketedWeightReceiver", FakeReceiver)
     _patch_standard_reload_dependencies(monkeypatch, events)
-    monkeypatch.setattr(utils_module, "_is_npu_platform", lambda: True)
-    monkeypatch.setattr(utils_module, "_has_layerwise_reload_metadata", lambda model: True)
+    monkeypatch.setattr(npu_utils_module, "_is_npu_platform", lambda: False)
 
-    utils_module.vLLMOmniColocateWorkerExtension.update_weights_from_ipc(_make_worker(model, model_config))
+    utils_module.vLLMOmniColocateWorkerExtension.update_weights_from_ipc(
+        _make_worker(model, model_config)
+    )
 
     assert events == [
         "patch_moe_loader",
-        "initialize",
         ("load", sentinel.bucket_0),
         ("load", sentinel.bucket_1),
-        "finalize",
-        "synchronize",
+        "process_after_loading",
     ]
 
 
-@pytest.mark.parametrize(
-    ("failure_site", "expected_events"),
-    [
-        ("receive", ["patch_moe_loader", "initialize", "receive", "finalize"]),
-        ("load", ["patch_moe_loader", "initialize", "receive", "load", "finalize"]),
-    ],
-)
-def test_standard_vllm_reload_finalizes_before_reraising(
-    monkeypatch,
-    failure_site,
-    expected_events,
-):
+def test_npu_reload_restores_moe_layout_before_receive(monkeypatch):
+    events = []
+    model = SimpleNamespace(load_weights=lambda weights: events.append(("load", weights)))
+    model_config = SimpleNamespace(hf_text_config=SimpleNamespace(hidden_size=4096))
+
+    class FakeReceiver:
+        def __init__(self, **kwargs):
+            pass
+
+        def receive_weights(self, on_bucket_received):
+            on_bucket_received(sentinel.bucket)
+
+    monkeypatch.setattr(bucketed_weight_transfer, "BucketedWeightReceiver", FakeReceiver)
+    _patch_standard_reload_dependencies(monkeypatch, events)
+    monkeypatch.setattr(npu_utils_module, "_is_npu_platform", lambda: True)
+    monkeypatch.setattr(
+        npu_utils_module,
+        "restore_moe_param_layout",
+        lambda model, hidden_size: events.append(("restore_moe_layout", hidden_size)),
+    )
+
+    utils_module.vLLMOmniColocateWorkerExtension.update_weights_from_ipc(
+        _make_worker(model, model_config)
+    )
+
+    assert events == [
+        "patch_moe_loader",
+        ("restore_moe_layout", 4096),
+        ("load", sentinel.bucket),
+        "process_after_loading",
+    ]
+
+
+@pytest.mark.parametrize("failure_site", ["receive", "load"])
+def test_standard_vllm_reload_propagates_failures(monkeypatch, failure_site):
     events = []
     original_error = RuntimeError(f"{failure_site} failed")
 
@@ -139,66 +131,14 @@ def test_standard_vllm_reload_finalizes_before_reraising(
                 raise original_error
             on_bucket_received(sentinel.bucket)
 
-    monkeypatch.setattr(
-        bucketed_weight_transfer,
-        "BucketedWeightReceiver",
-        FakeReceiver,
-    )
-    _patch_reload_hooks(monkeypatch, events)
-    _patch_standard_reload_dependencies(monkeypatch, events)
-    monkeypatch.setattr(utils_module, "_is_npu_platform", lambda: True)
-    monkeypatch.setattr(utils_module, "_has_layerwise_reload_metadata", lambda model: True)
-
-    with pytest.raises(RuntimeError) as exc_info:
-        utils_module.vLLMOmniColocateWorkerExtension.update_weights_from_ipc(_make_worker(model, sentinel.model_config))
-
-    assert exc_info.value is original_error
-    assert events == expected_events
-    assert "synchronize" not in events
-
-
-@pytest.mark.parametrize("is_npu", [False, True])
-def test_standard_vllm_reload_falls_back_to_full_post_load_processing(monkeypatch, is_npu):
-    events = []
-
-    class TinyModel(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.weight = torch.nn.Parameter(torch.ones(1))
-
-        def load_weights(self, weights):
-            events.append(("load", weights))
-
-    model = TinyModel()
-    assert not utils_module._has_layerwise_reload_metadata(model)
-
-    class FakeReceiver:
-        def __init__(self, **kwargs):
-            pass
-
-        def receive_weights(self, on_bucket_received):
-            on_bucket_received(sentinel.bucket)
-
     monkeypatch.setattr(bucketed_weight_transfer, "BucketedWeightReceiver", FakeReceiver)
     _patch_standard_reload_dependencies(monkeypatch, events)
-    monkeypatch.setattr(utils_module, "_is_npu_platform", lambda: is_npu)
+    monkeypatch.setattr(npu_utils_module, "_is_npu_platform", lambda: False)
 
-    utils_module.vLLMOmniColocateWorkerExtension.update_weights_from_ipc(_make_worker(model, sentinel.model_config))
+    with pytest.raises(RuntimeError) as exc_info:
+        utils_module.vLLMOmniColocateWorkerExtension.update_weights_from_ipc(
+            _make_worker(model, sentinel.model_config)
+        )
 
-    assert events == [
-        "patch_moe_loader",
-        ("load", sentinel.bucket),
-        "process_after_loading",
-        "synchronize",
-    ]
-
-
-def test_layerwise_reload_metadata_detection_uses_vllm_registry():
-    reload_module = importlib.import_module("vllm.model_executor.model_loader.reload")
-    model = torch.nn.Sequential(torch.nn.Linear(2, 2))
-
-    assert not utils_module._has_layerwise_reload_metadata(model)
-
-    reload_module.record_metadata_for_reloading(model)
-
-    assert utils_module._has_layerwise_reload_metadata(model)
+    assert exc_info.value is original_error
+    assert "process_after_loading" not in events

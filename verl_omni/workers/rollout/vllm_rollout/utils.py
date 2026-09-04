@@ -32,32 +32,6 @@ def _split_visible_devices(value: str) -> list[str]:
     return [entry.strip() for entry in value.split(",") if entry.strip()]
 
 
-def _is_npu_platform() -> bool:
-    """Return whether vLLM is running on an Ascend NPU platform."""
-    try:
-        from vllm.platforms import current_platform
-
-        return current_platform.device_type == "npu"
-    except Exception:
-        return False
-
-
-def _has_layerwise_reload_metadata(model: torch.nn.Module) -> bool:
-    """Return whether every current model layer was recorded for reloading.
-
-    vLLM records entries before the initial checkpoint load, including entries
-    for layers which do not yet own tensors. Checking registry membership rather
-    than non-empty metadata therefore distinguishes a recorded empty layer from
-    a layer added later or a model constructed outside vLLM's loader.
-    """
-    try:
-        from vllm.model_executor.model_loader.reload.layerwise import LAYERWISE_INFO
-
-        return all(layer in LAYERWISE_INFO for layer in model.modules())
-    except Exception:
-        return False
-
-
 class vLLMOmniColocateWorkerExtension(CustomPipelineWorkerExtension):
     """
     The class for vLLM-Omni's worker to inherit from, in the colocate setting.
@@ -73,7 +47,6 @@ class vLLMOmniColocateWorkerExtension(CustomPipelineWorkerExtension):
     """
 
     _pending_lora_peft_config: dict | None = None
-    _reported_layerwise_reload_fallback: bool = False
 
     def __new__(cls, **kwargs):
         set_death_signal()
@@ -210,52 +183,28 @@ class vLLMOmniColocateWorkerExtension(CustomPipelineWorkerExtension):
                 model, model_config = standard
                 from verl.utils.vllm.patch import patch_vllm_moe_model_weight_loader
 
-                # Keep verl's MoE loader compatibility on every standard-vLLM
-                # backend. The layerwise path restores the recorded original
-                # loaders, while the fallback path uses this patch directly.
+                # Re-attach weight_loader on Ascend FusedMoE params via verl's
+                # built-in patch (handles ACLGraph unwrap + SUPPORTED_MOE_MODELS
+                # whitelist, which Qwen3-Omni is registered into via
+                # patch_register_vllm_moe_model_weight_loader).
                 patch_vllm_moe_model_weight_loader(model)
 
-                is_npu = _is_npu_platform()
-                use_layerwise_reload = is_npu and _has_layerwise_reload_metadata(model)
-                if use_layerwise_reload:
-                    from vllm.model_executor.model_loader.reload import (
-                        finalize_layerwise_reload,
-                        initialize_layerwise_reload,
-                    )
+                # On Ascend, process_weights_after_loading transposes w13/w2 for
+                # fused-MoE compute; revert it so load_weights sees checkpoint-shape
+                # params. The post-load process_weights_after_loading re-transposes.
+                from verl_omni.workers.rollout.vllm_rollout.npu_utils import (
+                    _is_npu_platform,
+                    restore_moe_param_layout,
+                )
 
-                    # Restore the checkpoint layout and defer repacking one layer
-                    # at a time to keep Ascend peak memory bounded.
-                    initialize_layerwise_reload(model)
+                if _is_npu_platform():
+                    restore_moe_param_layout(model, model_config.hf_text_config.hidden_size)
+                receiver.receive_weights(
+                    on_bucket_received=lambda weights, *args, **kwargs: model.load_weights(weights)
+                )
+                from vllm.model_executor.model_loader.utils import process_weights_after_loading
 
-                    try:
-                        receiver.receive_weights(
-                            on_bucket_received=lambda weights, *args, **kwargs: model.load_weights(weights)
-                        )
-                    except BaseException:
-                        # Best-effort restore the kernel parameters so the worker
-                        # is not left with meta or partially loaded tensors.
-                        try:
-                            finalize_layerwise_reload(model, model_config)
-                        except Exception:
-                            logger.exception("Failed to restore model after weight reload failure")
-                        raise
-                    else:
-                        # Finish Ascend transpose/repack per layer and copy the
-                        # results back into the original kernel tensors.
-                        finalize_layerwise_reload(model, model_config)
-                else:
-                    if is_npu and not getattr(self, "_reported_layerwise_reload_fallback", False):
-                        logger.warning(
-                            "Layerwise reload metadata is unavailable; falling back to full post-load processing"
-                        )
-                        self._reported_layerwise_reload_fallback = True
-                    receiver.receive_weights(
-                        on_bucket_received=lambda weights, *args, **kwargs: model.load_weights(weights)
-                    )
-                    from vllm.model_executor.model_loader.utils import process_weights_after_loading
-
-                    process_weights_after_loading(model, model_config, self.device)
-                torch.accelerator.synchronize()
+                process_weights_after_loading(model, model_config, self.device)
             else:
                 # Diffusion pipeline worker: load via the pipeline. vllm-omni
                 # 0.26 removed DiffusionWorker/DiffusionModelRunner.load_weights;
