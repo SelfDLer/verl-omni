@@ -11,13 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import hashlib
 import logging
 import os
 from typing import Any
 from uuid import uuid4
-
-import numpy as np
 
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput, register
 from verl.experimental.agent_loop.single_turn_agent_loop import SingleTurnAgentLoop
@@ -31,29 +28,6 @@ logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 
-def _debug_audio(stage: str, audios: Any, sample_id: str | None = None) -> None:
-    """Emit compact rollout waveform statistics when explicitly enabled."""
-    if os.getenv("VERL_QWEN3_OMNI_DEBUG_AUDIO") != "1" or audios is None:
-        return
-    for index, audio in enumerate(audios):
-        array = np.asarray(audio)
-        tail = array[..., -160:]
-        logger.warning(
-            "qwen3_omni_audio stage=%s sample=%s index=%d shape=%s dtype=%s length=%d "
-            "remainder160=%d sum=%.9g abs_mean=%.9g tail160_sum=%.9g",
-            stage,
-            sample_id or "unknown",
-            index,
-            tuple(array.shape),
-            array.dtype,
-            array.shape[-1] if array.ndim else 0,
-            array.shape[-1] % 160 if array.ndim else 0,
-            float(array.sum()) if array.size else 0.0,
-            float(np.abs(array).mean()) if array.size else 0.0,
-            float(tail.sum()) if tail.size else 0.0,
-        )
-
-
 @register("omni_single_turn_agent")
 class OmniSingleTurnAgentLoop(SingleTurnAgentLoop):
     """Single-turn loop for an omni model's autoregressive Talker policy."""
@@ -61,13 +35,6 @@ class OmniSingleTurnAgentLoop(SingleTurnAgentLoop):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.rollout_adapter = self._resolve_rollout_adapter(self.rollout_config)
-
-    async def process_multi_modal_info(self, messages):
-        """Log rollout-side audio after the upstream media loader resolves it."""
-        multi_modal_data = await super().process_multi_modal_info(messages)
-        sample_id = hashlib.sha1(str(messages).encode("utf-8", "replace")).hexdigest()[:12]
-        _debug_audio("rollout_after_decode", multi_modal_data.get("audios"), sample_id)
-        return multi_modal_data
 
     @staticmethod
     def _resolve_rollout_adapter(rollout_config):

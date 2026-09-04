@@ -59,13 +59,6 @@ COMMON_OVERRIDES=(
     'trainer.logger=["console"]'
 )
 
-# Optional one-off Hydra overrides for diagnostics, e.g. selecting the
-# verl-omni agent loop implementation to enable rollout-side audio logging.
-if [[ -n "${EXTRA_OVERRIDES:-}" ]]; then
-    read -r -a extra_overrides <<< "${EXTRA_OVERRIDES}"
-    COMMON_OVERRIDES+=("${extra_overrides[@]}")
-fi
-
 overall_status=0
 
 for case_name in "${CASES[@]}"; do
