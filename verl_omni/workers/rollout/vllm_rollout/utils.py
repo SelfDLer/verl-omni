@@ -230,7 +230,7 @@ class vLLMOmniColocateWorkerExtension(CustomPipelineWorkerExtension):
                 )
                 from vllm.model_executor.model_loader.utils import process_weights_after_loading
 
-                    process_weights_after_loading(model, model_config, self.device)
+                process_weights_after_loading(model, model_config, self.device)
                 torch.accelerator.synchronize()
             else:
                 # Diffusion pipeline worker: load via the pipeline. vllm-omni
