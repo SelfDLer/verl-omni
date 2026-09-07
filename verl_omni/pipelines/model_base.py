@@ -705,6 +705,16 @@ class OmniRolloutPipelineBase:
         return cls._registry.get(model_type)
 
     @classmethod
+    def preprocess_multi_modal_data(cls, multi_modal_data: dict[str, Any]) -> dict[str, Any]:
+        """Normalize decoded media before the agent loop sends it to rollout.
+
+        The default preserves the media returned by verl's agent-loop loader.
+        Model adapters can override this when actor replay and rollout require
+        the same model-specific input normalization.
+        """
+        return multi_modal_data
+
+    @classmethod
     def postprocess_agent_loop_output(cls, output, *, tokenizer, response_length: int):
         """Map model-native rollout data to the policy sequence used by RL.
 

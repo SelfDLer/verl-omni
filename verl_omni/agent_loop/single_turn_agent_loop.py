@@ -36,6 +36,11 @@ class OmniSingleTurnAgentLoop(SingleTurnAgentLoop):
         super().__init__(*args, **kwargs)
         self.rollout_adapter = self._resolve_rollout_adapter(self.rollout_config)
 
+    async def process_multi_modal_info(self, messages):
+        """Apply model-specific normalization to rollout-side decoded media."""
+        multi_modal_data = await super().process_multi_modal_info(messages)
+        return self.rollout_adapter.preprocess_multi_modal_data(multi_modal_data)
+
     @staticmethod
     def _resolve_rollout_adapter(rollout_config):
         try:

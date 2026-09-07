@@ -164,6 +164,24 @@ def test_hop_pad_restores_actor_rollout_frame_parity(feature_extractor, L):
     assert actor_frames == (L + HOP - 1) // HOP, f"L={L}: frames should be ceil(L/hop)"
 
 
+@pytest.mark.parametrize("L", _audio_lengths())
+def test_rollout_adapter_applies_actor_audio_padding(L):
+    """Agent-loop re-decoding must not bypass the dataset's hop padding."""
+    pytest.importorskip("vllm_omni")
+    from verl_omni.pipelines.qwen3_omni.omni_rollout_adapter import Qwen3OmniRolloutAdapter
+
+    waveform = np.arange(L, dtype=np.float32)
+    media = {"images": None, "videos": [object()], "audios": [waveform]}
+
+    normalized = Qwen3OmniRolloutAdapter.preprocess_multi_modal_data(media)
+
+    expected = pad_audio_to_hop_multiple(waveform)
+    np.testing.assert_array_equal(normalized["audios"][0], expected)
+    assert normalized["audios"][0].shape[-1] % HOP == 0
+    assert normalized["videos"] is media["videos"]
+    assert media["audios"][0].shape[-1] == L
+
+
 @pytest.mark.parametrize("frames", [7, 25, 50, 51, 100, 200])
 def test_dedup_roundtrip_is_count_preserving(processor_with_dedup, frames):
     """(c) dedup -> vllm-omni re-expand is count-preserving on hop-padded expanded ids."""
