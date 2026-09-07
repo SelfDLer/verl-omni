@@ -22,6 +22,8 @@ Both **GPU** and **NPU** training platforms are supported:
   — **NPU**, **full-parameter V1** for text + image + audio AVQA training.
 - [`run_qwen3_omni_thinker_gspo_npu_nextqa_v1.sh`](qwen3_omni/run_qwen3_omni_thinker_gspo_npu_nextqa_v1.sh)
   — **NPU**, **full-parameter V1** for video question answering on NextQA.
+- [`run_qwen3_omni_thinker_gspo_lora_nextqa_v1_npu.sh`](qwen3_omni/run_qwen3_omni_thinker_gspo_lora_nextqa_v1_npu.sh)
+  — **NPU**, **LoRA (r=32) V1** for video question answering on NextQA.
 
 For the base environment setup, see the [installation guide](../../docs/start/install.md).
 
@@ -131,8 +133,9 @@ Only the **Thinker** (`Qwen3OmniMoeThinkerForConditionalGeneration`):
   (the V1 `Qwen3OmniThinkerAdapter.configure_model` handles Thinker-forward
   redirection and `_verl_strip_modules` via `get_strip_modules`,
   so `exclude_modules` only needs to cover the heads/encoders).
-- **NPU (full-parameter)** — LoRA is disabled (`lora_rank=0`); all Thinker
-  parameters are updated under FSDP.
+- **NPU (full-parameter or LoRA)** — the full-parameter recipes disable LoRA
+  (`lora_rank=0`), while the NextQA LoRA recipe uses the same rank, alpha, and
+  target modules as the GPU LoRA recipes.
 - `exclude_modules` strips talker / code2wav / code_predictor / visual /
   audio_tower; `freeze_vision_tower=True` keeps the vision encoder cold.
 - `configure_model` in the registered adapter
@@ -455,6 +458,17 @@ MODEL_PATH=/path/to/Qwen3-Omni-30B-A3B-Instruct \
 bash examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_npu_nextqa_v1.sh
 ```
 
+For LoRA (r=32), use the NPU LoRA launcher. It keeps the NPU runtime settings
+from the full-parameter recipe while using the optimization and sampling
+settings from the Qwen3-Omni LoRA recipe:
+
+```bash
+TRAIN_FILE=$HOME/data/nextqa/train.parquet \
+VAL_FILE=$HOME/data/nextqa/validation.parquet \
+MODEL_PATH=/path/to/Qwen3-Omni-30B-A3B-Instruct \
+bash examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_lora_nextqa_v1_npu.sh
+```
+
 For the task4 two-node topology, first create the Ray cluster across both
 machines, then launch on the head node with:
 
@@ -504,6 +518,7 @@ examples/gspo_trainer/
 │   ├── run_qwen3_omni_thinker_gspo_npu.sh            ← launch script (NPU, full-parameter)
 │   ├── run_qwen3_omni_thinker_gspo_npu_avqa_v1.sh    ← V1 launch script (NPU, AVQA)
 │   ├── run_qwen3_omni_thinker_gspo_npu_nextqa_v1.sh  ← V1 launch script (NPU, NextQA video)
+│   ├── run_qwen3_omni_thinker_gspo_lora_nextqa_v1_npu.sh ← V1 launch script (NPU, LoRA r=32, NextQA video)
 │   ├── config/
 │   │   └── qwen3_omni_thinker_gspo.yaml              ← old recipe config (deprecated path only)
 │   ├── qwen3_omni_thinker_only.yaml                  ← old vllm-omni stage config (deprecated path only)

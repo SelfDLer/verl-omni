@@ -64,3 +64,41 @@ def test_nextqa_npu_launcher_wires_video_gspo_training():
     assert all(setting in launcher for setting in required_environment)
     assert "data.filter_overlong_prompts_workers=64" not in launcher
     assert "models.transformers" not in launcher
+
+
+def test_nextqa_lora_npu_launcher_combines_lora_training_with_npu_runtime():
+    launcher_dir = Path(__file__).parents[2] / "examples/gspo_trainer/qwen3_omni"
+    launcher = (launcher_dir / "run_qwen3_omni_thinker_gspo_lora_nextqa_v1_npu.sh").read_text(encoding="utf-8")
+
+    lora_training_settings = (
+        "data.train_batch_size=128",
+        "data.max_response_length=12288",
+        "actor_rollout_ref.model.lora_rank=32",
+        "actor_rollout_ref.model.lora_alpha=64",
+        "actor_rollout_ref.model.lora_dtype=float32",
+        "actor_rollout_ref.model.lora.merge=true",
+        "actor_rollout_ref.model.target_modules=\"['q_proj','k_proj','v_proj','o_proj']\"",
+        "actor_rollout_ref.actor.optim.lr=3e-6",
+        "actor_rollout_ref.actor.optim.weight_decay=0.01",
+        "actor_rollout_ref.rollout.n=16",
+        "actor_rollout_ref.rollout.val_kwargs.temperature=1.0",
+        "actor_rollout_ref.rollout.val_kwargs.top_p=0.7",
+        "trainer.val_before_train=false",
+    )
+    assert all(setting in launcher for setting in lora_training_settings)
+
+    npu_runtime_settings = (
+        "export VLLM_ASCEND_ENABLE_NZ=0",
+        "ASCEND_HOME_PATH=${ASCEND_HOME_PATH:-/usr/local/Ascend/cann-9.0.0}",
+        "++data.mm_processor_kwargs.use_audio_in_video=${USE_AUDIO_IN_VIDEO}",
+        "+actor_rollout_ref.model.override_config.attn_implementation=sdpa",
+        "actor_rollout_ref.actor.entropy_from_logits_with_chunking=true",
+        "actor_rollout_ref.actor.fsdp_config.use_orig_params=true",
+        "actor_rollout_ref.actor.fsdp_config.use_torch_compile=false",
+        "actor_rollout_ref.rollout.name=vllm_omni",
+        "actor_rollout_ref.rollout.mode=async",
+        "actor_rollout_ref.rollout.agent.num_workers=$((TOTAL_NPUS / ROLLOUT_TP))",
+        "trainer.total_training_steps=${TOTAL_TRAINING_STEPS}",
+    )
+    assert all(setting in launcher for setting in npu_runtime_settings)
+    assert "actor_rollout_ref.model.lora_rank=0" not in launcher
