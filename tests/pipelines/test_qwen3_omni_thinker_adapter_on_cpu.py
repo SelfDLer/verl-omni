@@ -129,8 +129,10 @@ def test_v1_adapter_forwards_qwen3_omni_audio_lengths_to_rope(monkeypatch):
         image_grid_thw=None,
         video_grid_thw=None,
         audio_seqlens=None,
+        use_audio_in_video=False,
+        second_per_grids=None,
     ):
-        del attention_mask, image_grid_thw, video_grid_thw
+        del attention_mask, image_grid_thw, video_grid_thw, use_audio_in_video, second_per_grids
         processor.audio_seqlens = audio_seqlens
         _ = audio_seqlens[0]
         return torch.zeros((3, *input_ids.shape), dtype=torch.float32), torch.zeros((input_ids.shape[0], 1))
@@ -162,6 +164,77 @@ def test_v1_adapter_forwards_qwen3_omni_audio_lengths_to_rope(monkeypatch):
 
     worker._compute_position_ids(input_ids, attention_mask, multi_modal_inputs)
     torch.testing.assert_close(configured.audio_seqlens, torch.tensor([3]))
+
+
+@pytest.mark.parametrize("use_audio_in_video", [False, True])
+@pytest.mark.parametrize("seconds_per_grid", [0.5, 2.0])
+def test_v1_rope_matches_hf_for_video_audio(monkeypatch, use_audio_in_video, seconds_per_grid):
+    """V1 must match HF for interleaved AV and independent audio/video clips."""
+    from transformers import AutoConfig, AutoProcessor
+    from transformers.models.qwen3_omni_moe import (
+        Qwen3OmniMoeConfig,
+        Qwen3OmniMoeThinkerForConditionalGeneration,
+    )
+
+    config = Qwen3OmniMoeConfig()
+    processor = SimpleNamespace(tokenizer=None)
+    monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *args, **kwargs: config)
+    monkeypatch.setattr(AutoProcessor, "from_pretrained", lambda *args, **kwargs: processor)
+    processor = Qwen3OmniThinkerAdapter.configure_processor(
+        "/fake/qwen3-omni", SimpleNamespace(trust_remote_code=False)
+    )
+    cfg = processor.config
+    vision_end = config.talker_config.vision_end_token_id
+    # One audio feature frame produces one audio token. Two video grids each
+    # produce one visual token after spatial merging. Equal timestamps put the
+    # video token first, followed by audio, then the second video token.
+    if use_audio_in_video:
+        media_tokens = [
+            cfg.vision_start_token_id,
+            cfg.audio_start_token_id,
+            cfg.video_token_id,
+            cfg.audio_token_id,
+            cfg.video_token_id,
+            cfg.audio_end_token_id,
+            vision_end,
+        ]
+    else:
+        media_tokens = [
+            cfg.vision_start_token_id,
+            cfg.video_token_id,
+            cfg.video_token_id,
+            vision_end,
+            cfg.audio_start_token_id,
+            cfg.audio_token_id,
+            cfg.audio_end_token_id,
+        ]
+    input_ids = torch.tensor([[0, 10, *media_tokens, 11, 12]])
+    attention_mask = torch.ones_like(input_ids)
+    attention_mask[:, 0] = 0
+    merge = processor.spatial_merge_size
+    video_grid = torch.tensor([[2, merge, merge]])
+    mm_inputs = {
+        "feature_attention_mask": torch.tensor([[1, 0, 0]]),
+        "video_second_per_grid": torch.tensor([seconds_per_grid]),
+    }
+    expected, expected_delta = Qwen3OmniMoeThinkerForConditionalGeneration.get_rope_index(
+        processor,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        video_grid_thw=video_grid,
+        use_audio_in_video=use_audio_in_video,
+        audio_seqlens=torch.tensor([1]),
+        second_per_grids=mm_inputs["video_second_per_grid"],
+    )
+    actual, delta = processor.get_rope_index(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        video_grid_thw=video_grid,
+        **processor.get_rope_index_kwargs(mm_inputs),
+    )
+    assert actual.dtype == torch.int64
+    torch.testing.assert_close(actual, expected.long())
+    torch.testing.assert_close(delta, expected_delta)
 
 
 class _FusedMoEExperts(nn.Module):
