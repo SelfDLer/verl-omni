@@ -41,6 +41,36 @@ def _has_lora(module: nn.Module) -> bool:
     return hasattr(module, "lora_A") and hasattr(module, "lora_B")
 
 
+@pytest.mark.parametrize("freeze", [False, True])
+def test_full_parameter_visual_freeze_keeps_audio_and_text_trainable(freeze):
+    class Thinker(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.visual = nn.Linear(2, 2)
+            self.audio_tower = nn.Linear(2, 2)
+            self.text = nn.Linear(2, 1)
+
+        def forward(self, x):
+            return self.text(self.visual(x) + self.audio_tower(x))
+
+        def get_input_embeddings(self):
+            return self.text
+
+        def set_input_embeddings(self, value):
+            self.text = value
+
+    model = nn.Module()
+    model.thinker = Thinker()
+    model.talker = nn.Linear(2, 2)
+    model = Qwen3OmniThinkerAdapter.configure_model(model, SimpleNamespace(freeze_vision_tower=freeze))
+    assert not hasattr(model, "talker")
+    model(torch.ones(1, 2)).sum().backward()
+    assert all(param.requires_grad is (not freeze) for param in model.thinker.visual.parameters())
+    assert all((param.grad is None) is freeze for param in model.thinker.visual.parameters())
+    assert all(param.grad is not None for param in model.thinker.audio_tower.parameters())
+    assert all(param.grad is not None for param in model.thinker.text.parameters())
+
+
 def test_configure_processor_binds_multimodal_pad_dedup(monkeypatch):
     """The V1 processor path must collapse image, video, and audio pad runs."""
     pytest.importorskip("transformers")
@@ -184,7 +214,10 @@ def test_v1_rope_matches_hf_for_video_audio(monkeypatch, use_audio_in_video, sec
         "/fake/qwen3-omni", SimpleNamespace(trust_remote_code=False)
     )
     cfg = processor.config
-    vision_end = config.talker_config.vision_end_token_id
+    # The default HF config does not define this tokenizer-owned EOS ID.
+    # RoPE consumes the boundary by position, so use a distinct synthetic ID.
+    vision_end = 20
+    audio_end = 21
     # One audio feature frame produces one audio token. Two video grids each
     # produce one visual token after spatial merging. Equal timestamps put the
     # video token first, followed by audio, then the second video token.
@@ -195,7 +228,7 @@ def test_v1_rope_matches_hf_for_video_audio(monkeypatch, use_audio_in_video, sec
             cfg.video_token_id,
             cfg.audio_token_id,
             cfg.video_token_id,
-            cfg.audio_end_token_id,
+            audio_end,
             vision_end,
         ]
     else:
@@ -206,7 +239,7 @@ def test_v1_rope_matches_hf_for_video_audio(monkeypatch, use_audio_in_video, sec
             vision_end,
             cfg.audio_start_token_id,
             cfg.audio_token_id,
-            cfg.audio_end_token_id,
+            audio_end,
         ]
     input_ids = torch.tensor([[0, 10, *media_tokens, 11, 12]])
     attention_mask = torch.ones_like(input_ids)

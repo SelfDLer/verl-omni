@@ -134,6 +134,10 @@ class TestOmniModelConfigLoraFields:
 
         model_cfg.mtp = MtpConfig(enable=False)
         assert model_cfg.mtp.enable is False
+        assert model_cfg.freeze_vision_tower is False
+        model_cfg.freeze_vision_tower = False
+        model_cfg.freeze_vision_tower = True
+        assert model_cfg.freeze_vision_tower is True
 
     def test_instantiate_via_hydra(self):
         import os

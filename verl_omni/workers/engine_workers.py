@@ -687,6 +687,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             actor_config.model_config = model_config
             if actor_config.model_config.get("model_type", "language_model") == "omni_model":
                 actor_config.model_config.trainer_type = getattr(actor_config, "trainer_type", "policy_gradient")
+                actor_config.model_config.freeze_vision_tower = actor_config.freeze_vision_tower
             distillation_config: Optional[DistillationConfig] = (
                 omega_conf_to_dataclass(self.distillation_config) if self.distillation_enabled else None
             )

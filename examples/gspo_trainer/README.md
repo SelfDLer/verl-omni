@@ -136,8 +136,10 @@ Only the **Thinker** (`Qwen3OmniMoeThinkerForConditionalGeneration`):
 - **NPU (full-parameter or LoRA)** — the full-parameter recipes disable LoRA
   (`lora_rank=0`), while the NextQA LoRA recipe uses the same rank, alpha, and
   target modules as the GPU LoRA recipes.
-- `exclude_modules` strips talker / code2wav / code_predictor / visual /
-  audio_tower; `freeze_vision_tower=True` keeps the vision encoder cold.
+- `exclude_modules` excludes matching modules from LoRA adaptation. In
+  full-parameter Qwen3-Omni V1 training, `actor.freeze_vision_tower=True`
+  disables gradients for the visual encoder; the audio encoder remains
+  trainable. The adapter removes talker / code2wav / code_predictor.
 - `configure_model` in the registered adapter
   (`verl_omni/pipelines/qwen3_omni/thinker_training_adapter.py`) redirects
   `module.forward` → `module.thinker.forward` and sets
@@ -398,7 +400,14 @@ data:
   val_files: /path/to/nextqa_parquet/validation.parquet
 ```
 
-Video sampling uses 1 FPS, 32--128 visual tokens per frame (`25088--100352` pixels), and at most 32 frames. These values are embedded in each parquet video item for `qwen_omni_utils.process_mm_info`; override them at conversion time with `--fps`, `--min_pixels`, `--max_pixels`, or `--max_frames`.
+Video sampling requests 1 FPS, `25088--100352` pixels per frame, and at most 32 frames. These values are embedded in each parquet video item for `qwen_omni_utils.process_mm_info`; override them at conversion time with `--fps`, `--min_pixels`, `--max_pixels`, or `--max_frames`. Resizing uses the processor's patch size.
+
+The loader retains source duration and sampled frame indices with each video.
+Both actor and rollout use the resulting actual sampling rate, including when
+the frame cap reduces it below 1 FPS, and do not sample the frames a second
+time. Existing parquet files remain compatible. The Qwen3-Omni adapters also
+restore complete audio/video placeholders before rollout expansion and align
+rollout RoPE with actor positions for fractional video intervals and short audio.
 
 Install the Qwen Omni media loader with:
 

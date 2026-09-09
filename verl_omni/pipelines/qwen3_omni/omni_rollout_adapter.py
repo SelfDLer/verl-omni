@@ -18,6 +18,7 @@ vLLM-Omni's frozen pipeline definitions — no duplication of what vLLM-Omni
 already owns.
 """
 
+from transformers.models.qwen3_omni_moe import Qwen3OmniMoeProcessor
 from vllm_omni.config.pipeline_registry import register_pipeline
 from vllm_omni.model_executor.models.qwen3_omni.pipeline import (
     QWEN3_OMNI_PIPELINE,
@@ -25,7 +26,14 @@ from vllm_omni.model_executor.models.qwen3_omni.pipeline import (
 )
 
 from verl_omni.pipelines.model_base import OmniRolloutPipelineBase
+from verl_omni.pipelines.qwen3_omni.processing import install_video_timing_fix
+from verl_omni.pipelines.qwen3_omni.rope import install_vllm_rope_fix
 from verl_omni.utils.dataset.omni_rl_datasets import pad_audio_to_hop_multiple
+
+# This module is imported both by the actor and by vLLM worker extensions.
+# Apply the same processor timing and RoPE semantics in every process.
+install_video_timing_fix(Qwen3OmniMoeProcessor)
+install_vllm_rope_fix()
 
 
 @OmniRolloutPipelineBase.register("qwen3_omni_moe")

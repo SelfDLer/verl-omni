@@ -67,10 +67,22 @@ class QwenOmniRLHFDataset(RLHFDataset):
                     category=FutureWarning,
                     message=r".*__audioread_load.*",
                 )
-                audios, images, videos = process_mm_info(messages, use_audio_in_video=use_audio_in_video)
+                audios, images, videos = process_mm_info(
+                    messages,
+                    use_audio_in_video=use_audio_in_video,
+                    image_patch_size=image_patch_size,
+                    return_video_metadata=True,
+                )
         except Exception as error:
             raise RuntimeError("Failed to process multimodal sample") from error
 
+        if videos is not None:
+            # vLLM's VideoMetadata path expects ordinary Python indices. Keep
+            # source duration/FPS with the shared frames through actor replay.
+            videos = [
+                (frames, {**metadata, "frames_indices": list(map(int, metadata["frames_indices"]))})
+                for frames, metadata in videos
+            ]
         if audios is not None:
             audios = [pad_audio_to_hop_multiple(a) for a in audios]
         return images, videos, audios

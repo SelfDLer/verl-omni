@@ -351,6 +351,11 @@ def analyze_offpolicy(records: list[dict[str, Any]], threshold: float) -> dict[s
         reverse=True,
     )
     values = [item["seq_log_ppl_abs_diff"] for item in samples if item["seq_log_ppl_abs_diff"] is not None]
+    first_positions = [
+        item["first_position_abs_diff_gt_0.05"]
+        for item in samples
+        if isinstance(item["first_position_abs_diff_gt_0.05"], (int, float))
+    ]
     problem_summary = []
     for problem_id, items in by_problem.items():
         item_values = [item["seq_log_ppl_abs_diff"] for item in items if item["seq_log_ppl_abs_diff"] is not None]
@@ -370,6 +375,10 @@ def analyze_offpolicy(records: list[dict[str, Any]], threshold: float) -> dict[s
         "with_abs_diff": len(values),
         "threshold": threshold,
         "abnormal_count": sum(value > threshold for value in values),
+        "all_records_above_threshold": bool(values) and all(value > threshold for value in values),
+        "first_position_zero_count": sum(position == 0 for position in first_positions),
+        "with_first_position": len(first_positions),
+        "with_stable_problem_id": sum(not item["problem_id"].startswith("batch:") for item in samples),
         "mean": statistics.fmean(values) if values else None,
         "median": statistics.median(values) if values else None,
         "max": max(values) if values else None,
@@ -486,6 +495,35 @@ def classify(report: dict[str, Any]) -> list[str]:
     offpolicy = report["offpolicy"]
     metric_summaries = report["training_metrics"]["summaries"]
     conclusions = []
+    missing_record_types = [
+        name
+        for name, count in (
+            ("ACTOR_VIDEO_DEBUG", actor["count"]),
+            ("ROLLOUT_INPUT_DEBUG", cross["rollout_count"]),
+            ("VLLM_MM_BEFORE_DEBUG", cross["before_count"]),
+            ("VLLM_MM_AFTER_DEBUG", cross["after_count"]),
+        )
+        if count == 0
+    ]
+    hashes_incomplete = (
+        cross["rollout_count"] > 0
+        and (
+            cross["rollouts_with_dedup_hash"] == 0
+            or cross["rollouts_with_expanded_hash"] == 0
+            or cross["matched_before_by_hash"] == 0
+            or cross["matched_after_by_hash"] == 0
+        )
+    )
+    structural_check_complete = not missing_record_types and not hashes_incomplete
+
+    if missing_record_types:
+        conclusions.append(
+            "结构检查不完整，缺少 " + ", ".join(missing_record_types) + "；不能据此判定 token/grid/hash/长度一致。"
+        )
+    if cross["rollout_count"] and cross["rollouts_with_dedup_hash"] == 0:
+        conclusions.append("ROLLOUT_INPUT_DEBUG 没有 dedup_prompt_hash，无法与 vLLM 展开前记录对齐。")
+    if cross["rollouts_with_expanded_hash"] and cross["matched_after_by_hash"] == 0:
+        conclusions.append("rollout 有 expanded_prompt_hash，但没有匹配的 vLLM 展开后记录；先补齐 vLLM 日志。")
 
     if actor["token_mismatches"]:
         conclusions.append("Actor 侧 expected/actual video token 数不一致：优先检查 HF processor、grid_thw 和训练输入拼接。")
@@ -504,11 +542,23 @@ def classify(report: dict[str, Any]) -> list[str]:
         conclusions.append("Actor 与 vLLM 观察到的 video_grid_thw 值集合不同：检查抽帧/resize/processor 参数。")
 
     has_structural_error = bool(actor["token_mismatches"] or cross["mismatches"])
-    if not has_structural_error and offpolicy["abnormal_count"]:
+    if structural_check_complete and not has_structural_error and offpolicy["abnormal_count"]:
         conclusions.append(
             "已记录的 token/grid/hash/长度未发现硬不一致，但仍有 off-policy 异常；"
             "下一组只切换 enforce_eager=true，排查 NPU graph/算子数值路径。"
         )
+    if offpolicy["all_records_above_threshold"]:
+        conclusions.append(
+            "所有 OFFPOLICY_SAMPLE 都超过阈值，说明这些记录很可能是阈值筛选后的异常子集；"
+            "其均值不能与全批次 log_ppl_abs_diff 直接比较。"
+        )
+    if offpolicy["with_first_position"] and offpolicy["first_position_zero_count"] == offpolicy["with_first_position"]:
+        conclusions.append(
+            "全部已记录异常都从 response 第 0 个 token 开始，优先怀疑 prompt/prefill 多模态上下文、mRoPE 或首步 logits，"
+            "而不是长回复误差累积。"
+        )
+    if offpolicy["count"] and offpolicy["with_stable_problem_id"] == 0:
+        conclusions.append("OFFPOLICY_SAMPLE 未包含稳定 problem_id；batch_index 跨 step 不代表同一个样本，暂时不能判断是否固定视频复现。")
     pearson = metric_summaries.get("pearson")
     ppl = metric_summaries.get("log_ppl_abs_diff")
     if pearson and pearson["min"] < 0.995:
@@ -567,6 +617,7 @@ def print_report(report: dict[str, Any], top: int) -> None:
     )
     print(f"rollout/vLLM mismatches: {len(cross['mismatches'])} {cross['mismatch_counts']}")
     print(f"vLLM records missing second_per_grid: {cross['missing_second_per_grid']}/{cross['before_count']}")
+    print(f"actor use_audio_in_video: {actor['use_audio_in_video']}")
     print(f"actor second_per_grid variants: {actor['second_per_grid']}")
     print(f"vLLM second_per_grid variants: {cross['second_per_grid']}")
     print(f"actor video_grid_thw variants: {actor['video_grid_thw']}")
@@ -585,12 +636,19 @@ def print_report(report: dict[str, Any], top: int) -> None:
         )
 
     offpolicy = report["offpolicy"]
-    print("\n=== Off-policy summary ===")
+    print("\n=== Logged off-policy sample records ===")
     print(
         f"samples={offpolicy['count']} with_abs_diff={offpolicy['with_abs_diff']} "
         f">{offpolicy['threshold']:.4g}={offpolicy['abnormal_count']} "
         f"mean={fmt_number(offpolicy['mean'])} median={fmt_number(offpolicy['median'])} "
         f"max={fmt_number(offpolicy['max'])}"
+    )
+    if offpolicy["all_records_above_threshold"]:
+        print("note: every record exceeds the threshold; this is probably a filtered subset, not the full batch")
+    print(
+        "first mismatch at response position 0: "
+        f"{offpolicy['first_position_zero_count']}/{offpolicy['with_first_position']}; "
+        f"records with stable problem_id: {offpolicy['with_stable_problem_id']}/{offpolicy['count']}"
     )
     print(f"\nWorst {min(top, len(offpolicy['worst_samples']))} samples:")
     for item in offpolicy["worst_samples"][:top]:

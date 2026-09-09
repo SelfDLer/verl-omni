@@ -48,10 +48,11 @@ def test_process_multi_modal_info_uses_qwen_omni_utils_and_reorders_outputs(monk
     padded_len = L + (-L % 160)
     audios = [np.zeros(L, dtype=np.float32)]
     images = [object()]
-    videos = [object()]
+    frames = object()
+    videos = [(frames, {"fps": 30.0, "total_num_frames": 1800, "frames_indices": np.arange(32)})]
 
-    def fake_process_mm_info(messages, use_audio_in_video):
-        calls.append((messages, use_audio_in_video))
+    def fake_process_mm_info(messages, use_audio_in_video, image_patch_size, return_video_metadata):
+        calls.append((messages, use_audio_in_video, image_patch_size, return_video_metadata))
         return audios, images, videos
 
     monkeypatch.setitem(sys.modules, "qwen_omni_utils", SimpleNamespace(process_mm_info=fake_process_mm_info))
@@ -60,34 +61,35 @@ def test_process_multi_modal_info_uses_qwen_omni_utils_and_reorders_outputs(monk
     result = QwenOmniRLHFDataset._process_multi_modal_info(messages, image_patch_size=14, config={})
 
     assert result[0] is images
-    assert result[1] is videos
+    assert result[1][0][0] is frames
+    assert result[1][0][1] == {"fps": 30.0, "total_num_frames": 1800, "frames_indices": list(range(32))}
     assert len(result[2]) == 1
     # Audio is padded to a hop multiple (160) so the actor recompute and the
     # vllm-omni rollout expand it to the same audio token count.
     assert result[2][0].shape == (padded_len,)
     np.testing.assert_array_equal(result[2][0][:L], audios[0])
     np.testing.assert_array_equal(result[2][0][L:], 0.0)
-    assert calls == [(messages, False)]
+    assert calls == [(messages, False, 14, True)]
 
     result = QwenOmniRLHFDataset._process_multi_modal_info(
         messages,
-        image_patch_size=14,
+        image_patch_size=16,
         config={"mm_processor_kwargs": {"use_audio_in_video": True}},
     )
 
     assert result[0] is images
-    assert result[1] is videos
+    assert result[1][0][0] is frames
     assert len(result[2]) == 1
     assert result[2][0].shape == (padded_len,)
     np.testing.assert_array_equal(result[2][0][:L], audios[0])
     np.testing.assert_array_equal(result[2][0][L:], 0.0)
-    assert calls == [(messages, False), (messages, True)]
+    assert calls == [(messages, False, 14, True), (messages, True, 16, True)]
 
 
 def test_process_multi_modal_info_chains_decode_error_without_dumping_messages(monkeypatch):
     original_error = ValueError("decode failed")
 
-    def fake_process_mm_info(messages, use_audio_in_video):
+    def fake_process_mm_info(messages, **kwargs):
         raise original_error
 
     monkeypatch.setitem(sys.modules, "qwen_omni_utils", SimpleNamespace(process_mm_info=fake_process_mm_info))

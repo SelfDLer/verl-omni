@@ -53,6 +53,7 @@ class OmniModelConfig(BaseConfig):
         "architectures",
         "share_embeddings_and_output_weights",
         "mtp",
+        "freeze_vision_tower",
     }
 
     # note that we separate path, hf_config_path and tokenizer_path in case they are different
@@ -96,6 +97,8 @@ class OmniModelConfig(BaseConfig):
     override_config: dict = field(default_factory=dict)
 
     # training flags
+    # Propagated from actor.freeze_vision_tower before constructing the engine.
+    freeze_vision_tower: bool = False
     enable_gradient_checkpointing: bool = True
     enable_activation_offload: bool = False
     use_remove_padding: bool = True

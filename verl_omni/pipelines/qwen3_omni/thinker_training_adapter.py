@@ -24,9 +24,8 @@ import logging
 import os
 from typing import Any
 
-import numpy as np
-
 from verl_omni.pipelines.model_base import OmniModelBase
+from verl_omni.pipelines.qwen3_omni.processing import collapse_multimodal_tokens, install_video_timing_fix
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +56,8 @@ class Qwen3OmniThinkerAdapter(OmniModelBase):
             forward/embedding accessors redirected to thinker.
         """
         module = super().configure_model(module, model_config)
+        if getattr(model_config, "freeze_vision_tower", False):
+            module.thinker.visual.requires_grad_(False)
         module.forward = module.thinker.forward
         module.get_input_embeddings = module.thinker.get_input_embeddings
         module.set_input_embeddings = module.thinker.set_input_embeddings
@@ -83,8 +84,12 @@ class Qwen3OmniThinkerAdapter(OmniModelBase):
         import types
 
         from transformers import AutoConfig, AutoProcessor
-        from transformers.models.qwen3_omni_moe import Qwen3OmniMoeThinkerForConditionalGeneration
+        from transformers.models.qwen3_omni_moe import (
+            Qwen3OmniMoeProcessor,
+            Qwen3OmniMoeThinkerForConditionalGeneration,
+        )
 
+        install_video_timing_fix(Qwen3OmniMoeProcessor)
         processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=model_config.trust_remote_code)
         config = AutoConfig.from_pretrained(model_path, trust_remote_code=model_config.trust_remote_code)
 
@@ -147,37 +152,7 @@ class Qwen3OmniThinkerAdapter(OmniModelBase):
 
         processor.get_rope_index_kwargs = _get_rope_index_kwargs
 
-        # Collapse consecutive multimodal pad tokens before vLLM-Omni re-expands
-        # them (token-IDs path still unfixed: https://github.com/vllm-project/vllm/issues/33672);
-        # mirrors verl's qwen2_5_vl_dedup_image_tokens.
-        def _dedup_pad_tokens(self, prompt_ids: list[int]) -> list[int]:
-            tokenizer = getattr(self, "tokenizer", None)
-            if tokenizer is None:
-                return prompt_ids
-            pad_ids: set[int] = set()
-            for tok_attr in ("image_token", "video_token", "audio_token"):
-                tok = getattr(self, tok_attr, None)
-                if tok is None:
-                    continue
-                try:
-                    tid = tokenizer.convert_tokens_to_ids(tok)
-                except Exception:
-                    continue
-                if tid is None or tid == getattr(tokenizer, "unk_token_id", None):
-                    continue
-                pad_ids.add(int(tid))
-            if not pad_ids:
-                return prompt_ids
-            arr = np.asarray(prompt_ids, dtype=np.int64)
-            if arr.size == 0:
-                return prompt_ids
-            is_pad = np.isin(arr, list(pad_ids))
-            keep = np.ones(arr.size, dtype=bool)
-            same_as_prev = is_pad[1:] & is_pad[:-1] & (arr[1:] == arr[:-1])
-            keep[1:] &= ~same_as_prev
-            return arr[keep].tolist()
-
-        processor.dedup_pad_tokens = types.MethodType(_dedup_pad_tokens, processor)
+        processor.dedup_pad_tokens = types.MethodType(collapse_multimodal_tokens, processor)
         return processor
 
     @classmethod
