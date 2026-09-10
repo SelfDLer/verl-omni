@@ -486,6 +486,35 @@ N_GPUS_PER_NODE=8 NNODES=2 \
 bash examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_npu_nextqa_v1.sh
 ```
 
+## NPU environment diagnostics
+
+Run the tracked [environment audit script](../../scripts/audit_npu_environment.py)
+on each training server, from the repository root, using the same Python
+environment and CANN setup as the training job:
+
+```bash
+mkdir -p outputs/npu_diagnostics
+python3 scripts/audit_npu_environment.py > outputs/npu_diagnostics/environment.json
+python3 -m pip check > outputs/npu_diagnostics/pip_check.txt 2>&1
+```
+
+If the launcher sources CANN inside the script, run these commands after its
+`source` lines and before `python3 -m verl_omni.trainer.main_omni`, or run the
+same `source` lines in the diagnostic shell first. Keep each server's reports
+separate when comparing a multi-node environment.
+
+The audit uses only the Python standard library. It reports installed package
+versions, installation commits when available, resolved source paths, source
+checkout revisions, selected Ascend environment variables, CANN version files,
+and the installed verl agent-loop source fingerprint. It does not import
+PyTorch or vLLM, initialize an NPU, install packages, or require locally
+downloaded dependency repositories. `pip check` returns a nonzero status when
+it finds dependency conflicts; inspect its saved output in that case.
+
+Commit the script with the repository; generated reports belong in the
+ignored `outputs/` directory. These reports identify the local interpreter's
+environment and do not inspect already-running Ray workers.
+
 ## Performance
 
 All GPU results measured on a single node of **4 × H800 80GB**, actor and
