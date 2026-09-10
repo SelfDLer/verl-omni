@@ -42,8 +42,9 @@ from verl_omni.pipelines.request_batch import (
 from verl_omni.pipelines.request_batch import (
     split_diffusion_output_by_request as _split_diffusion_output_by_request,
 )
+from verl_omni.pipelines.rollout_media import DiffusionIOSpec, MediaSpec
+from verl_omni.pipelines.rollout_request import condition_images_from_payload
 from verl_omni.pipelines.schedulers import FlowMatchSDEDiscreteScheduler
-from verl_omni.pipelines.utils import ImageGenerationRequest
 
 from .common import (
     apply_boogu_text_cfg,
@@ -89,6 +90,10 @@ class BooguImagePipelineWithLogProb(QwenImageTokenIdPromptMixin, BooguImagePipel
     """
 
     supports_request_batch = True
+
+    #: Declares the primary rollout media stream so downstream consumers read
+    #: the modality from the adapter instead of inferring it from tensor rank.
+    diffusion_io_spec = DiffusionIOSpec(primary=MediaSpec("image"))
 
     def __init__(self, *, od_config: OmniDiffusionConfig, prefix: str = "") -> None:
         super().__init__(od_config=od_config, prefix=prefix)
@@ -426,8 +431,7 @@ class BooguImagePipelineWithLogProb(QwenImageTokenIdPromptMixin, BooguImagePipel
         custom_prompt = prompts[0] if prompts else {}
         condition_images: list = []
         if isinstance(custom_prompt, dict):
-            generation_request = ImageGenerationRequest.from_request_payload(custom_prompt)
-            condition_images = list(generation_request.images or [])
+            condition_images = list(condition_images_from_payload(custom_prompt))
         if len(condition_images) > 1:
             raise ValueError(
                 f"Boogu-Image editing supports a single reference image; received {len(condition_images)}."

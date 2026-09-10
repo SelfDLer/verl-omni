@@ -24,6 +24,8 @@ from vllm_omni.inputs.data import OmniCustomPrompt, OmniDiffusionSamplingParams
 from vllm_omni.lora.request import LoRARequest
 
 from verl_omni.pipelines.model_base import VllmOmniPipelineBase
+from verl_omni.pipelines.rollout_media import DiffusionIOSpec
+from verl_omni.pipelines.rollout_request import OmniRolloutRequest
 from verl_omni.workers.config import DiffusionModelConfig, DiffusionRolloutConfig
 from verl_omni.workers.rollout.replica import DiffusionOutput
 from verl_omni.workers.rollout.vllm_rollout.vllm_omni_strategy_base import OmniStrategyBase
@@ -133,16 +135,18 @@ class DiffusionStrategy(OmniStrategyBase):
 
     def preprocess_input(
         self,
-        prompt_ids: list[int],
+        request: OmniRolloutRequest,
         sampling_params: dict[str, Any],
-        multi_modal_data: dict[str, Any],
         lora_request: Optional[LoRARequest],
-        negative_prompt_ids: Optional[list[int]],
-        prompt_mask: torch.BoolTensor | None = None,
-        mm_processor_kwargs: Optional[dict[str, Any]] = None,
-        extra_prompt_ids: Optional[dict[str, list[int]]] = None,
-        negative_extra_prompt_ids: Optional[dict[str, list[int]]] = None,
     ) -> tuple[OmniCustomPrompt, list[Any]]:
+        prompt_ids = request.prompt.token_ids
+        prompt_mask = request.prompt.mask
+        negative_prompt_ids = request.prompt.negative_token_ids
+        extra_prompt_ids = request.prompt.extra_token_ids
+        negative_extra_prompt_ids = request.prompt.negative_extra_token_ids
+        mm_processor_kwargs = request.prompt.mm_processor_kwargs
+        multi_modal_data = request.multi_modal_data()
+
         default_params_list = self.server.engine.default_sampling_params_list
 
         custom_prompt: OmniCustomPrompt = {"prompt_token_ids": prompt_ids}
@@ -159,6 +163,9 @@ class DiffusionStrategy(OmniStrategyBase):
         if multi_modal_data:
             custom_prompt["multi_modal_data"] = multi_modal_data
             custom_prompt["extra_args"] = {"multi_modal_data": multi_modal_data}
+        if mm_processor_kwargs:
+            # Reference fps / sampling_rate must reach the pipeline (mirrors ARStrategy).
+            custom_prompt["mm_processor_kwargs"] = mm_processor_kwargs
 
         sampling_kwargs: dict[str, Any] = {}
         extra_args: dict[str, Any] = {}
@@ -182,6 +189,8 @@ class DiffusionStrategy(OmniStrategyBase):
         lora_request: Optional[LoRARequest],
         priority: int,
     ) -> Any:
+        if priority != 0:
+            raise ValueError("DiffusionStrategy does not support nonzero request priority")
         return await self._collect_last_output(
             self.server.engine.generate(
                 prompt=prompt,
@@ -189,6 +198,23 @@ class DiffusionStrategy(OmniStrategyBase):
                 sampling_params_list=params,
             )
         )
+
+    def _diffusion_io_spec(self) -> Optional[DiffusionIOSpec]:
+        """Resolve the adapter-declared media I/O spec for the active pipeline.
+
+        The spec lets a diffusion adapter declare its auxiliary media streams
+        (e.g. joint audio and its sample rate) so this strategy does not have to
+        hard-code model-specific tuple positions or sample rates. Returns
+        ``None`` when the pipeline (or a bare test server) declares no spec.
+        """
+        model_config = getattr(self.server, "model_config", None)
+        if model_config is None:
+            return None
+        pipeline_cls = VllmOmniPipelineBase.get_class(
+            architecture=model_config.architecture,
+            algorithm=model_config.algorithm,
+        )
+        return getattr(pipeline_cls, "diffusion_io_spec", None)
 
     def process_output(self, final_res: Any, params: Any, sampling_params: dict[str, Any]) -> DiffusionOutput:
         output_type = _diffusion_output_type(sampling_params)
@@ -221,10 +247,16 @@ class DiffusionStrategy(OmniStrategyBase):
                 if key in diffusion_output and diffusion_output[key] is not None:
                     diffusion_output = diffusion_output[key]
                     break
+        io_spec = self._diffusion_io_spec()
+        audio_sample_rate: Optional[int] = None
         rollout_audio: Any = None
         if isinstance(diffusion_output, tuple | list):
             rollout_audio = diffusion_output[1] if len(diffusion_output) > 1 else None
             diffusion_output = diffusion_output[0]
+            if io_spec is not None:
+                audio_spec = next((spec for spec in io_spec.auxiliary if spec.modality == "audio"), None)
+                if audio_spec is not None:
+                    audio_sample_rate = audio_spec.sample_rate
         if output_type == "latent":
             diffusion_output = torch.as_tensor(diffusion_output).float()
         else:
@@ -251,7 +283,11 @@ class DiffusionStrategy(OmniStrategyBase):
                 extra_fields[key] = _maybe_unbatch(value)
         if rollout_audio is not None:
             extra_fields["audio"] = _maybe_unbatch(rollout_audio)
-            extra_fields.setdefault("audio_sample_rate", 32000)
+            # The audio sample rate is declared by the adapter's DiffusionIOSpec
+            # (or provided at runtime through rollout metadata); no model-specific
+            # default lives in this shared strategy.
+            if audio_sample_rate is not None:
+                extra_fields.setdefault("audio_sample_rate", audio_sample_rate)
 
         req_output = getattr(final_res, "request_output", None) or final_res
         if hasattr(req_output, "outputs") and req_output.outputs:

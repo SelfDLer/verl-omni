@@ -38,8 +38,9 @@ from verl_omni.pipelines.qwen_image_flow_grpo.common import (
     apply_true_cfg,
     coalesce_not_none,
 )
+from verl_omni.pipelines.rollout_media import DiffusionIOSpec, MediaSpec
+from verl_omni.pipelines.rollout_request import condition_images_from_payload
 from verl_omni.pipelines.schedulers import FlowMatchSDEDiscreteScheduler
-from verl_omni.pipelines.utils import ImageGenerationRequest
 
 __all__ = ["QwenImageEditPlusPipelineWithLogProb"]
 
@@ -114,6 +115,10 @@ def _validate_condition_image_sizes(condition_images, vae_image_sizes, target_si
 @VllmOmniPipelineBase.register("QwenImageEditPlusPipeline", algorithm="flow_grpo")
 class QwenImageEditPlusPipelineWithLogProb(QwenImageTokenIdPromptMixin, QwenImageEditPlusPipeline):
     """Qwen-Image-Edit-Plus rollout pipeline for FlowGRPO."""
+
+    #: Declares the primary rollout media stream so downstream consumers read
+    #: the modality from the adapter instead of inferring it from tensor rank.
+    diffusion_io_spec = DiffusionIOSpec(primary=MediaSpec("image"))
 
     def __init__(self, *, od_config: OmniDiffusionConfig, prefix: str = ""):
         super().__init__(od_config=od_config, prefix=prefix)
@@ -361,20 +366,9 @@ class QwenImageEditPlusPipelineWithLogProb(QwenImageTokenIdPromptMixin, QwenImag
         """
         custom_prompt = req.prompts[0] if req.prompts else {}
 
-        # Parse the condition images via the shared ImageGenerationRequest interface.
-        # NOTE: only this image-edit pipeline consumes ImageGenerationRequest for now;
-        # migrating the existing T2I pipelines onto it is left to a follow-up PR to keep
-        # this change focused.
-        request_payload = custom_prompt
-        if (
-            isinstance(custom_prompt, dict)
-            and prompt_embeds is not None
-            and custom_prompt.get("prompt") is None
-            and custom_prompt.get("prompt_token_ids") is None
-        ):
-            request_payload = {**custom_prompt, "prompt": ""}
-        gen_request = ImageGenerationRequest.from_request_payload(request_payload) if request_payload else None
-        condition_images = gen_request.images if gen_request else None
+        # Condition images are parsed from the rollout request payload; the prompt
+        # itself is read from custom_prompt below.
+        condition_images = condition_images_from_payload(custom_prompt) if isinstance(custom_prompt, dict) else None
         if not condition_images:
             raise ValueError("Qwen-Image-Edit requires at least one condition image")
 
