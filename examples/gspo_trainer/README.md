@@ -1,6 +1,6 @@
 # Qwen3-Omni Thinker GSPO Trainer
 
-Last updated: 09/09/2026
+Last updated: 09/11/2026
 
 This example shows how to post-train the **Qwen3-Omni-30B-A3B Thinker** with
 **GSPO** on multimodal reasoning tasks, using FSDP for the actor and `vllm-omni` as
@@ -18,6 +18,10 @@ Both **GPU** and **NPU** training platforms are supported:
   — **NPU**, **full-parameter V1** for text + image + audio AVQA training.
 
 For the base environment setup, see the [installation guide](../../docs/start/install.md).
+
+For NExT-QA video + soundtrack training on Ascend, see the
+[video2 NPU recipe](qwen3_omni/README_nextqa_video2.md). It preserves the existing
+NExT-QA converter and uses GSPO + LoRA with separate video and audio inputs.
 
 ## Installation
 
