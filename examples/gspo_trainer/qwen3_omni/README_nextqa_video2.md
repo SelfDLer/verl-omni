@@ -1,5 +1,8 @@
 # NExT-QA on Ascend (video2)
 
+For full-depth, full-parameter training with validation and resume, use the
+[formal training entry point](README_nextqa_video2_fullparam.md).
+
 This recipe starts from upstream main `c25701c`, using its synchronous omni
 trainer and Qwen3-Omni adapters. It trains the Thinker's text attention LoRA
 parameters with GSPO. Vision/audio encoders and the base language model remain
