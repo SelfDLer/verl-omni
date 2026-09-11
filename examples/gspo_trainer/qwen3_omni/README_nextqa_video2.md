@@ -51,8 +51,12 @@ mounted identically on every worker.
 ## Input contract
 
 `NextQARLHFDataset` expands each video into a video item followed by an explicit
-audio item referencing its soundtrack. Both reach the model. Audio is resampled
-to 16 kHz and padded to a 160-sample boundary on the actor side, matching rollout.
+audio item referencing its soundtrack. Both reach the model. FFmpeg decodes the
+soundtrack to a mono 16 kHz float32 waveform before Qwen media processing;
+MP4 containers are never passed to the ordinary soundfile audio loader.
+Clip boundaries are applied once during decoding. Audio is padded to a
+160-sample boundary and shared by actor and rollout. Every Ray worker needs
+`ffmpeg` on its PATH, including during dataset length filtering.
 This recipe uses **separate video and audio segments**, not the model's joint
 audio/video interleaving mode; set `use_audio_in_video=false` as in the launcher.
 It does not promise the same time-aligned joint representation as interleaving.

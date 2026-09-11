@@ -15,6 +15,8 @@
 """Exercise media boundaries with mocked decoders, without a rollout engine."""
 
 import importlib.util
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -75,6 +77,100 @@ def test_decode_preserves_metadata_and_pads_audio(dataset_module, monkeypatch):
     np.testing.assert_array_equal(audios[0][:801], audio)
     np.testing.assert_array_equal(audios[0][801:], 0)
     assert calls == [{"use_audio_in_video": False, "image_patch_size": 16, "return_video_metadata": True}]
+
+
+def test_mp4_soundtrack_reaches_qwen_as_waveform(dataset_module, monkeypatch):
+    messages = dataset_module.with_video_soundtracks(
+        [{"content": [{"type": "video", "video": "/clips/a b.mp4", "video_start": 2, "video_end": 3}]}]
+    )
+    waveform = np.ones(16000, dtype="<f4")
+
+    def run(command, **kwargs):
+        assert command[command.index("-i") + 1] == "/clips/a b.mp4"
+        assert command[command.index("-ss") + 1] == "2.0"
+        assert command[command.index("-t") + 1] == "1.0"
+        return SimpleNamespace(stdout=waveform.tobytes())
+
+    def decode(decoded, **kwargs):
+        video, audio = decoded[0]["content"]
+        assert video == messages[0]["content"][0]
+        assert set(audio) == {"type", "audio"}  # no second crop in Qwen
+        np.testing.assert_array_equal(audio["audio"], waveform)
+        return [audio["audio"]], None, None
+
+    monkeypatch.setattr(dataset_module.subprocess, "run", run)
+    monkeypatch.setitem(sys.modules, "qwen_omni_utils", SimpleNamespace(process_mm_info=decode))
+    _, _, audios = dataset_module.NextQARLHFDataset._process_multi_modal_info(messages, 16, {})
+    np.testing.assert_array_equal(audios[0], waveform)
+    assert messages[0]["content"][1]["audio"] == "/clips/a b.mp4"
+    assert messages[0]["content"][1]["audio_start"] == 2
+
+
+@pytest.mark.parametrize("failure", ["missing", "codec", "timeout", "empty", "nonfinite"])
+def test_soundtrack_decode_failure_is_actionable(dataset_module, monkeypatch, failure):
+    def run(*args, **kwargs):
+        if failure == "missing":
+            raise FileNotFoundError()
+        if failure == "codec":
+            raise subprocess.CalledProcessError(1, args[0], stderr=b"no audio stream")
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(args[0], 120)
+        return SimpleNamespace(stdout=b"" if failure == "empty" else np.array([np.nan], dtype="<f4").tobytes())
+
+    monkeypatch.setattr(dataset_module.subprocess, "run", run)
+    messages = dataset_module.with_video_soundtracks([{"content": [{"type": "video", "video": "clip.mp4"}]}])
+    with pytest.raises((RuntimeError, ValueError), match="ffmpeg|clip.mp4"):
+        dataset_module.decode_video_soundtracks(messages)
+
+
+def test_real_aac_mp4_soundtrack_and_clip(dataset_module, monkeypatch, tmp_path):
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        imageio_ffmpeg = pytest.importorskip("imageio_ffmpeg")
+        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    path = tmp_path / "clip with spaces.mp4"
+    subprocess.run(
+        [
+            ffmpeg,
+            "-nostdin",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=s=32x32:r=8:d=2",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=2",
+            "-c:v",
+            "mpeg4",
+            "-c:a",
+            "aac",
+            "-ac",
+            "2",
+            "-shortest",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    real_run = subprocess.run
+
+    def run(command, **kwargs):
+        return real_run([ffmpeg, *command[1:]], **kwargs)
+
+    monkeypatch.setattr(dataset_module.subprocess, "run", run)
+    messages = dataset_module.with_video_soundtracks(
+        [{"content": [{"type": "video", "video": str(path), "video_start": 0.5, "video_end": 1.5}]}]
+    )
+    audio = dataset_module.decode_video_soundtracks(messages)[0]["content"][1]
+    assert audio["audio"].shape == (16000,)
+    assert audio["audio"].dtype == np.float32
+    assert np.isfinite(audio["audio"]).all()
+    assert np.max(np.abs(audio["audio"])) > 0.01
+    assert set(audio) == {"type", "audio"}
 
 
 @pytest.mark.parametrize("options", [{"use_audio_in_video": True}, {"sampling_rate": 48000}])
