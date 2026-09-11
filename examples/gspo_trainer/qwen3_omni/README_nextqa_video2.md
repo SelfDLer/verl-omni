@@ -65,6 +65,15 @@ different sampled FPS are rejected explicitly by the actor processor.
 
 ## Run and validate
 
+For full-parameter actor/rollout consistency checks using a depth-reduced
+checkpoint, a small data subset and no checkpoint I/O, use the
+[NPU debug script](../debug/README.md). This debug path disables LoRA and
+exports a separate checkpoint from the source weights on its first run:
+
+```bash
+bash examples/gspo_trainer/debug/run_nextqa_video2_npu.sh
+```
+
 First run two updates plus validation and a checkpoint using real data:
 
 ```bash
@@ -87,7 +96,8 @@ cluster first as described in the NPU guide, and launch on the head node.
 All final CLI arguments are forwarded to Hydra, including `--cfg job` to
 inspect the composed configuration without training.
 
-The starting settings use eager rollout, padded SDPA, microbatch size 1,
+The starting settings use graph rollout (`enforce_eager=false`, capture sizes
+`[1,2,4,8]`), padded SDPA, microbatch size 1,
 8,192 prompt tokens, 1,024 response tokens, four samples per GRPO group, and
 greedy validation. This avoids packing independent examples into an unmasked
 SDPA sequence. These are correctness-oriented defaults, not tuned throughput

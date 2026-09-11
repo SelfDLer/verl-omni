@@ -72,6 +72,27 @@ class OmniPPOTrainerSync(PPOTrainerSync):
         self.tokenizer = model_config.tokenizer
         self.processor = model_config.processor
 
+    def _compute_old_log_prob(self, batch, metrics):
+        debug_dir = self.config.trainer.get("consistency_debug_dir")
+        if debug_dir and (
+            not self.config.actor_rollout_ref.rollout.calculate_log_probs
+            or self.config.algorithm.rollout_correction.bypass_mode
+        ):
+            raise ValueError("Consistency debug requires rollout logprobs and independent actor recomputation.")
+        batch = super()._compute_old_log_prob(batch, metrics)
+        if debug_dir:
+            import transfer_queue as tq
+
+            from verl_omni.utils.consistency_debug import save_consistency_batch
+
+            data = tq.kv_batch_get(
+                keys=batch.keys,
+                partition_id=batch.partition_id,
+                select_fields=["old_log_probs", "rollout_log_probs", "response_mask", "responses"],
+            ).to_padded_tensor()
+            metrics.update(save_consistency_batch(data, debug_dir, self.global_steps))
+        return batch
+
     # The rollout server resumes admission after every successful wake; this
     # bridge remains a safety net for holds not preceded by a wake (init).
     # TODO (long): check and fix the resume bridge on the rollout side.

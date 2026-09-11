@@ -1,0 +1,8 @@
+{
+  "enable_audio_output": false,
+  "thinker_config": {
+    "text_config": {
+      "num_hidden_layers": 4
+    }
+  }
+}

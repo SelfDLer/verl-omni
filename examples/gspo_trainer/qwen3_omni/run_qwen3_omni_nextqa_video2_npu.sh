@@ -72,7 +72,8 @@ exec python3 -m verl_omni.trainer.main_omni \
     actor_rollout_ref.rollout.tensor_model_parallel_size="${ROLLOUT_TP}" \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.5 \
     actor_rollout_ref.rollout.max_num_seqs=8 \
-    actor_rollout_ref.rollout.enforce_eager=true \
+    actor_rollout_ref.rollout.enforce_eager=false \
+    actor_rollout_ref.rollout.cudagraph_capture_sizes='[1,2,4,8]' \
     actor_rollout_ref.rollout.load_format=safetensors \
     actor_rollout_ref.rollout.enable_prefix_caching=false \
     actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=false \
