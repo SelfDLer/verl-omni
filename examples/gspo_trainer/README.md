@@ -20,8 +20,25 @@ Both **GPU** and **NPU** training platforms are supported:
 For the base environment setup, see the [installation guide](../../docs/start/install.md).
 
 For NExT-QA video + soundtrack training on Ascend, see the
-[video2 NPU recipe](qwen3_omni/README_nextqa_video2.md). It preserves the existing
-NExT-QA converter and uses GSPO + LoRA with separate video and audio inputs.
+[NExT-QA NPU script](qwen3_omni/run_qwen3_omni_nextqa_npu.sh). It preserves the existing
+NExT-QA converter and uses full-parameter GSPO with separate video and audio inputs.
+For attention LoRA instead, use
+[`run_qwen3_omni_nextqa_lora_npu.sh`](qwen3_omni/run_qwen3_omni_nextqa_lora_npu.sh)
+(rank 32, alpha 64, LR=3e-6). Both entries share the media and rollout settings.
+Source CANN/ATB, install the NPU dependencies and ffmpeg on all workers, then
+set MODEL_PATH to the original full checkpoint and TRAIN_FILE/VAL_FILE to the
+converted parquet files. OUTPUT_DIR selects persistent checkpoint storage.
+Defaults target 16 x 64 GB NPUs: TP=4, rollout memory fraction 0.65, concurrency
+4, graph capture [1,2,4], 32 questions and 8 responses per question. NPU FSDP2
+synchronizes every micro-batch to keep accumulated gradients sharded. Actor
+microbatch is 1 with gradient checkpointing, parameter/optimizer offload and
+forward resharding. LR=1e-6 with 5% warmup; validation and checkpointing run
+every 25 steps, with automatic resume and the latest three checkpoints retained
+(not automatic best-checkpoint selection). No measured 64 GB peak is available:
+check rollout, backward, optimizer and weight-sync peaks on full-depth inputs.
+Tune ROLLOUT_MEMORY_FRACTION and ROLLOUT_MAX_NUM_SEQS (1 through 8); capture
+sizes follow concurrency. Final Hydra overrides take precedence. Training
+reward gains must be confirmed against the initial full validation baseline.
 
 ## Installation
 

@@ -46,7 +46,7 @@ changing source or config.
 ## Run
 
 Use the dependencies, parquet and sourced CANN/ATB environment from the
-[video2 recipe](../qwen3_omni/README_nextqa_video2.md). Download the source
+[video2 recipe](../README.md). Download the source
 checkpoint locally first.
 
 ```bash
@@ -75,7 +75,7 @@ automatic resume and checkpoints are disabled. Video/audio inputs and the
 if prompt filtering leaves fewer than one batch.
 
 Graph capture sizes are `[1,2]` with two concurrent requests per replica; the
-full recipe uses `[1,2,4,8]`. Actor `use_torch_compile=false` is a separate
+full recipe uses `[1,2,4]`. Actor `use_torch_compile=false` is a separate
 training setting. Initial export, model loading and graph capture still take
 time; local CPU tests do not measure NPU speedup.
 

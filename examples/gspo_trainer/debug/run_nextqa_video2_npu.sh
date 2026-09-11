@@ -24,7 +24,11 @@ if [[ "$PREPARE_MODEL" == true ]]; then
 fi
 export MODEL_PATH="$DEBUG_MODEL_PATH"
 
-exec bash "${SCRIPT_DIR}/../qwen3_omni/run_qwen3_omni_nextqa_video2_npu.sh" \
+exec bash "${SCRIPT_DIR}/../qwen3_omni/run_qwen3_omni_nextqa_npu.sh" \
+    data.train_batch_size=$((N_GPUS_PER_NODE * NNODES * 2)) \
+    actor_rollout_ref.actor.ppo_mini_batch_size=$((N_GPUS_PER_NODE * NNODES)) \
+    actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=0.0 \
+    trainer.validation_data_dir=null \
     data.train_max_samples=32 \
     data.val_max_samples=4 \
     data.shuffle=false \

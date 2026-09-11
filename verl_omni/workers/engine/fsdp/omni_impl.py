@@ -15,12 +15,13 @@
 
 import logging
 import warnings
+from contextlib import contextmanager
 
 import torch
 from torch.distributed.tensor import DTensor
 from transformers import AutoModelForMultimodalLM
 from verl.utils.debug import log_gpu_memory_usage
-from verl.utils.device import get_device_id
+from verl.utils.device import get_device_id, get_device_name
 from verl.utils.fsdp_utils import (
     get_init_weight_context_manager,
     load_fsdp_model_to_gpu,
@@ -42,6 +43,21 @@ logger = logging.getLogger(__name__)
 @EngineRegistry.register(model_type="omni_model", backend=["fsdp", "fsdp2"], device=["cuda", "npu"])
 class OmniFSDPEngine(FSDPEngineWithLMHead):
     """FSDP engine for omni models"""
+
+    @contextmanager
+    def _gradient_sync_context(self, *, is_last_micro_batch: bool):
+        """Keep NPU FSDP2 gradients sharded throughout accumulation.
+
+        The pinned verl defers reduction on intermediate micro-batches, which
+        retains full FP32 gradients and can exceed 64 GB for the full Thinker.
+        Synchronizing each backward preserves accumulation and the optimizer
+        step boundary, at the cost of additional reduce-scatter communication.
+        """
+        if self.engine_config.strategy == "fsdp2" and get_device_name() == "npu":
+            yield
+            return
+        with super()._gradient_sync_context(is_last_micro_batch=is_last_micro_batch):
+            yield
 
     @staticmethod
     def _cast_dtensor_weight_for_sync(tensor: torch.Tensor) -> torch.Tensor:
