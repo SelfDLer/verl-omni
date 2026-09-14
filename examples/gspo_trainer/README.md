@@ -492,8 +492,9 @@ bash examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_npu_nextqa_v1.
 
 All Thinker parameters are trainable, including the vision tower; LoRA is
 disabled. The actor uses BF16 FSDP2, gradient checkpointing, parameter and
-optimizer offload, and a micro-batch size of 1 per NPU. NPU FSDP2 synchronizes
-each backward pass to keep accumulated gradients sharded.
+optimizer offload, and a micro-batch size of 1 per NPU. Gradient synchronization
+follows the pinned verl implementation, which defers synchronization until the
+last micro-batch of each accumulation cycle.
 
 | Setting | Default |
 | --- | --- |
