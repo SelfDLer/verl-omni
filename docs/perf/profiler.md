@@ -314,6 +314,8 @@ Set `global_profiler.tool=npu` and configure each role under
   (`0d3f56a8980a55bfbbf1214ea54fa1b32ca1405c`) before collecting both roles.
   The fix stops rollout collection before training computation begins.
   The repository's current verl pin (`fefb080`) predates this fix.
+  <!-- TODO: Remove the manual verl revision requirement above once
+  .github/verl_pin.txt includes verl-project/verl#7722. -->
 - Install `torch-npu>=2.10.0.post6` with a compatible PyTorch and CANN environment.
   Start with `contents='[npu,cpu]'` and add `module` or `stack` as needed;
   rollout collection options also depend on the inference backend.
@@ -380,10 +382,11 @@ The per-role `tool_config.npu` block also exposes the following options:
 | `level` | `level_none`, `level0`, `level1`, `level2` | `level0` |
 | `analysis` | Automatically parse the collected data | `True` |
 | `discrete` | Separate databases per task when `True`; tasks in one training step share a database when `False` | `False` |
-| `profile_token_start` / `profile_token_end` | Response-token collection bounds (end exclusive), for token-level profiling where supported | `null` / `null` (full collection) |
+| `profile_token_start` / `profile_token_end` | Response-token collection bounds for Omni autoregressive decoding (end exclusive), where supported by the inference engine | `null` / `null` (full collection) |
 
-Response-token bounds apply to compatible rollout engines, not to the actor's
-forward/backward passes. They do not select diffusion denoising timesteps.
+`profile_token_start` and `profile_token_end` select response-token positions
+during Omni autoregressive decoding in compatible rollout engines. They do not
+select diffusion denoising steps or control the actor's forward/backward passes.
 
 The table lists defaults for the shared diffusion/reward profiler config.
 Omni actor/ref/rollout defaults come from upstream verl and can differ.
@@ -392,10 +395,26 @@ Omni actor/ref/rollout defaults come from upstream verl and can differ.
 
 To inspect the collected Ascend traces, follow the upstream guide's
 [visualization and offline parsing instructions](https://github.com/verl-project/verl/blob/main/docs/ascend_tutorial/en/dev_guide/performance/ascend_profiling.rst#visualization).
-When automatic analysis is disabled, parse the raw data with
-`torch_npu.profiler.profiler.analyse(profiler_path=...)` before opening the
-results in MindStudio Insight. Pass the parent directory containing the
-`*_ascend_pt` trace folder. Rollout collection is performed by the inference
+When automatic analysis is disabled, **parse the raw data offline before opening
+it in MindStudio Insight**. Run the following Python code in your torch-npu
+environment, replacing the example path with your actual `*_ascend_pt` trace
+directory:
+
+```python
+import torch_npu
+
+torch_npu.profiler.profiler.analyse(
+    profiler_path="./outputs/profile/actor_update/worker_123_20260918_ascend_pt"
+)
+```
+
+To parse multiple traces together, you can also pass their immediate parent
+directory (for example, `./outputs/profile/actor_update`). The parser checks
+that directory and its immediate children; it does not recursively search
+all nested stage directories.
+
+Repeat for other actor stages or rollout trace directories as needed, then open
+the parsed results in MindStudio Insight. Rollout collection is performed by the inference
 engine, so its parsing behavior and supported options can differ from the actor's;
 the actor's `analysis=True` does not configure rollout parsing.
 
