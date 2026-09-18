@@ -80,6 +80,31 @@ def test_omni_single_turn_agent_resolves_registered_adapter(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_omni_single_turn_agent_normalizes_rollout_media_with_adapter(monkeypatch):
+    audio = object()
+    decoded = {"images": None, "videos": [object()], "audios": [audio]}
+    normalized = {**decoded, "audios": [object()]}
+
+    async def upstream_process_multi_modal_info(_self, messages):
+        assert messages == [{"role": "user", "content": "hello"}]
+        return decoded
+
+    class Adapter:
+        @classmethod
+        def preprocess_multi_modal_data(cls, multi_modal_data):
+            assert multi_modal_data is decoded
+            return normalized
+
+    monkeypatch.setattr(SingleTurnAgentLoop, "process_multi_modal_info", upstream_process_multi_modal_info)
+    loop = object.__new__(OmniSingleTurnAgentLoop)
+    loop.rollout_adapter = Adapter
+
+    result = await loop.process_multi_modal_info([{"role": "user", "content": "hello"}])
+
+    assert result is normalized
+
+
+@pytest.mark.asyncio
 async def test_talker_contract_supports_different_trajectory_and_conditioning_shapes(monkeypatch):
     codebooks = torch.arange(24, dtype=torch.long).reshape(3, 8)
     hidden_states = torch.ones(4, 6)

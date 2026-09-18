@@ -41,6 +41,36 @@ def _has_lora(module: nn.Module) -> bool:
     return hasattr(module, "lora_A") and hasattr(module, "lora_B")
 
 
+@pytest.mark.parametrize("freeze", [False, True])
+def test_full_parameter_visual_freeze_keeps_audio_and_text_trainable(freeze):
+    class Thinker(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.visual = nn.Linear(2, 2)
+            self.audio_tower = nn.Linear(2, 2)
+            self.text = nn.Linear(2, 1)
+
+        def forward(self, x):
+            return self.text(self.visual(x) + self.audio_tower(x))
+
+        def get_input_embeddings(self):
+            return self.text
+
+        def set_input_embeddings(self, value):
+            self.text = value
+
+    model = nn.Module()
+    model.thinker = Thinker()
+    model.talker = nn.Linear(2, 2)
+    model = Qwen3OmniThinkerAdapter.configure_model(model, SimpleNamespace(freeze_vision_tower=freeze))
+    assert not hasattr(model, "talker")
+    model(torch.ones(1, 2)).sum().backward()
+    assert all(param.requires_grad is (not freeze) for param in model.thinker.visual.parameters())
+    assert all((param.grad is None) is freeze for param in model.thinker.visual.parameters())
+    assert all(param.grad is not None for param in model.thinker.audio_tower.parameters())
+    assert all(param.grad is not None for param in model.thinker.text.parameters())
+
+
 def test_configure_processor_binds_multimodal_pad_dedup(monkeypatch):
     """The V1 processor path must collapse image, video, and audio pad runs."""
     pytest.importorskip("transformers")
@@ -93,9 +123,8 @@ def test_configure_processor_binds_multimodal_pad_dedup(monkeypatch):
     ]
 
 
-@pytest.mark.parametrize("has_audio,has_video", [(True, False), (False, True), (True, True), (False, False)])
-def test_v1_adapter_forwards_qwen3_omni_media_metadata_to_rope(monkeypatch, has_audio, has_video):
-    """Forward audio lengths and video timing without adding absent modalities."""
+def test_v1_adapter_forwards_qwen3_omni_audio_lengths_to_rope(monkeypatch):
+    """The V1 adapter must install the audio-aware agent-loop RoPE path."""
     pytest.importorskip("transformers")
     _require_version("transformers", "5.0.0")
 
@@ -134,11 +163,12 @@ def test_v1_adapter_forwards_qwen3_omni_media_metadata_to_rope(monkeypatch, has_
         image_grid_thw=None,
         video_grid_thw=None,
         audio_seqlens=None,
+        use_audio_in_video=False,
         second_per_grids=None,
     ):
-        del attention_mask, image_grid_thw, video_grid_thw
+        del attention_mask, image_grid_thw, video_grid_thw, use_audio_in_video, second_per_grids
         processor.audio_seqlens = audio_seqlens
-        processor.second_per_grids = second_per_grids
+        _ = audio_seqlens[0]
         return torch.zeros((3, *input_ids.shape), dtype=torch.float32), torch.zeros((input_ids.shape[0], 1))
 
     processor = Qwen3OmniMoeProcessor()
@@ -156,14 +186,10 @@ def test_v1_adapter_forwards_qwen3_omni_media_metadata_to_rope(monkeypatch, has_
     )
     assert hasattr(configured, "get_rope_index_kwargs")
 
-    multi_modal_inputs = {}
-    if has_audio:
-        multi_modal_inputs["feature_attention_mask"] = torch.tensor([[1, 1, 1, 0]])
-    if has_video:
-        multi_modal_inputs["video_second_per_grid"] = torch.tensor([3.75])
+    multi_modal_inputs = {"feature_attention_mask": torch.tensor([[1, 1, 1, 0]])}
     extra_kwargs = configured.get_rope_index_kwargs(multi_modal_inputs)
-    assert ("audio_seqlens" in extra_kwargs) == has_audio
-    assert ("second_per_grids" in extra_kwargs) == has_video
+    assert "audio_seqlens" in extra_kwargs
+    torch.testing.assert_close(extra_kwargs["audio_seqlens"], torch.tensor([3]))
 
     worker = AgentLoopWorker()
     worker.processor = configured
@@ -171,14 +197,83 @@ def test_v1_adapter_forwards_qwen3_omni_media_metadata_to_rope(monkeypatch, has_
     attention_mask = torch.ones_like(input_ids)
 
     worker._compute_position_ids(input_ids, attention_mask, multi_modal_inputs)
-    if has_audio:
-        torch.testing.assert_close(configured.audio_seqlens, torch.tensor([3]))
+    torch.testing.assert_close(configured.audio_seqlens, torch.tensor([3]))
+
+
+@pytest.mark.parametrize("use_audio_in_video", [False, True])
+@pytest.mark.parametrize("seconds_per_grid", [0.5, 2.0])
+def test_v1_rope_matches_hf_for_video_audio(monkeypatch, use_audio_in_video, seconds_per_grid):
+    """V1 must match HF for interleaved AV and independent audio/video clips."""
+    from transformers import AutoConfig
+    from transformers.models.qwen3_omni_moe import (
+        Qwen3OmniMoeConfig,
+        Qwen3OmniMoeThinkerForConditionalGeneration,
+    )
+
+    from verl_omni.pipelines.qwen3_omni.video_processor import Qwen3OmniVideoProcessor
+
+    config = Qwen3OmniMoeConfig()
+    processor = SimpleNamespace(tokenizer=None)
+    monkeypatch.setattr(AutoConfig, "from_pretrained", lambda *args, **kwargs: config)
+    monkeypatch.setattr(Qwen3OmniVideoProcessor, "from_pretrained", lambda *args, **kwargs: processor)
+    processor = Qwen3OmniThinkerAdapter.configure_processor(
+        "/fake/qwen3-omni", SimpleNamespace(trust_remote_code=False)
+    )
+    cfg = processor.config
+    # The default HF config does not define this tokenizer-owned EOS ID.
+    # RoPE consumes the boundary by position, so use a distinct synthetic ID.
+    vision_end = 20
+    audio_end = 21
+    # One audio feature frame produces one audio token. Two video grids each
+    # produce one visual token after spatial merging. Equal timestamps put the
+    # video token first, followed by audio, then the second video token.
+    if use_audio_in_video:
+        media_tokens = [
+            cfg.vision_start_token_id,
+            cfg.audio_start_token_id,
+            cfg.video_token_id,
+            cfg.audio_token_id,
+            cfg.video_token_id,
+            audio_end,
+            vision_end,
+        ]
     else:
-        assert configured.audio_seqlens is None
-    if has_video:
-        torch.testing.assert_close(configured.second_per_grids, torch.tensor([3.75]))
-    else:
-        assert configured.second_per_grids is None
+        media_tokens = [
+            cfg.vision_start_token_id,
+            cfg.video_token_id,
+            cfg.video_token_id,
+            vision_end,
+            cfg.audio_start_token_id,
+            cfg.audio_token_id,
+            audio_end,
+        ]
+    input_ids = torch.tensor([[0, 10, *media_tokens, 11, 12]])
+    attention_mask = torch.ones_like(input_ids)
+    attention_mask[:, 0] = 0
+    merge = processor.spatial_merge_size
+    video_grid = torch.tensor([[2, merge, merge]])
+    mm_inputs = {
+        "feature_attention_mask": torch.tensor([[1, 0, 0]]),
+        "video_second_per_grid": torch.tensor([seconds_per_grid]),
+    }
+    expected, expected_delta = Qwen3OmniMoeThinkerForConditionalGeneration.get_rope_index(
+        processor,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        video_grid_thw=video_grid,
+        use_audio_in_video=use_audio_in_video,
+        audio_seqlens=torch.tensor([1]),
+        second_per_grids=mm_inputs["video_second_per_grid"],
+    )
+    actual, delta = processor.get_rope_index(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        video_grid_thw=video_grid,
+        **processor.get_rope_index_kwargs(mm_inputs),
+    )
+    assert actual.dtype == torch.int64
+    torch.testing.assert_close(actual, expected.long())
+    torch.testing.assert_close(delta, expected_delta)
 
 
 class _FusedMoEExperts(nn.Module):

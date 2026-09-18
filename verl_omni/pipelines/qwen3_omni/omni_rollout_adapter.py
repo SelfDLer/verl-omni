@@ -25,6 +25,7 @@ from vllm_omni.model_executor.models.qwen3_omni.pipeline import (
 )
 
 from verl_omni.pipelines.model_base import OmniRolloutPipelineBase
+from verl_omni.utils.dataset.omni_rl_datasets import pad_audio_to_hop_multiple
 
 
 @OmniRolloutPipelineBase.register("qwen3_omni_moe")
@@ -42,6 +43,17 @@ class Qwen3OmniRolloutAdapter(OmniRolloutPipelineBase):
     - ``thinker_talker`` — stages 0-1 (codec output).
     - ``full`` — stages 0-2 (audio waveform output).
     """
+
+    @classmethod
+    def preprocess_multi_modal_data(cls, multi_modal_data):
+        """Match rollout waveforms to the actor-side audio normalization."""
+        audios = multi_modal_data.get("audios")
+        if audios is None:
+            return multi_modal_data
+
+        normalized = dict(multi_modal_data)
+        normalized["audios"] = [pad_audio_to_hop_multiple(audio) for audio in audios]
+        return normalized
 
     @classmethod
     def build_stage_configs(cls, pipeline_mode="thinker_only"):

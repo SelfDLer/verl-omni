@@ -570,6 +570,14 @@ outputs go to `${OUTPUT_DIR}/checkpoints` and `${OUTPUT_DIR}/validation`.
 Logging uses console and TensorBoard; the launcher also writes
 `run_qwen3omni_npu_nextqa_full_ms_16.log` in the repository root.
 
+### Experimental joint audio-video recipes
+
+For the separate joint AV full-parameter and LoRA launchers ported from
+`video-dev-3`, see [Joint AV NExT-QA](qwen3_omni/README_nextqa_joint_av.md).
+They use `QwenOmniRLHFDataset` with `use_audio_in_video=true` and keep their
+own training settings. The full-depth, separate-soundtrack recipe above
+continues to use its existing launcher and defaults.
+
 ## Performance
 
 All GPU results measured on a single node of **4 × H800 80GB**, actor and

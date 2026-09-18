@@ -24,9 +24,8 @@ import logging
 import os
 from typing import Any
 
-import numpy as np
-
 from verl_omni.pipelines.model_base import OmniModelBase
+from verl_omni.pipelines.qwen3_omni.processing import collapse_multimodal_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +56,8 @@ class Qwen3OmniThinkerAdapter(OmniModelBase):
             forward/embedding accessors redirected to thinker.
         """
         module = super().configure_model(module, model_config)
+        if getattr(model_config, "freeze_vision_tower", False):
+            module.thinker.visual.requires_grad_(False)
         module.forward = module.thinker.forward
         module.get_input_embeddings = module.thinker.get_input_embeddings
         module.set_input_embeddings = module.thinker.set_input_embeddings
@@ -99,57 +100,59 @@ class Qwen3OmniThinkerAdapter(OmniModelBase):
         model_cls = Qwen3OmniMoeThinkerForConditionalGeneration
 
         # Cast to int64: HF returns float32, FSDP would otherwise bf16-round positions.
-        def _get_rope_index_long(self, *args, **kwargs):
-            vision_position_ids, deltas = model_cls.get_rope_index(self, *args, **kwargs)
+        def _get_rope_index_long(
+            self,
+            input_ids=None,
+            image_grid_thw=None,
+            video_grid_thw=None,
+            attention_mask=None,
+            use_audio_in_video=None,
+            audio_seqlens=None,
+            second_per_grids=None,
+            **kwargs,
+        ):
+            # V1's generic worker does not forward mm_processor_kwargs to RoPE.
+            # The processor marks video audio with adjacent vision/audio BOS
+            # tokens; separate audio + video inputs must keep the default False.
+            if use_audio_in_video is None:
+                use_audio_in_video = False
+                if input_ids is not None and video_grid_thw is not None:
+                    paired_starts = (input_ids[:, :-1] == self.config.vision_start_token_id) & (
+                        input_ids[:, 1:] == self.config.audio_start_token_id
+                    )
+                    if attention_mask is not None:
+                        paired_starts &= attention_mask[:, :-1].bool() & attention_mask[:, 1:].bool()
+                    use_audio_in_video = bool(paired_starts.any())
+            vision_position_ids, deltas = model_cls.get_rope_index(
+                self,
+                input_ids=input_ids,
+                image_grid_thw=image_grid_thw,
+                video_grid_thw=video_grid_thw,
+                attention_mask=attention_mask,
+                use_audio_in_video=use_audio_in_video,
+                audio_seqlens=audio_seqlens,
+                second_per_grids=second_per_grids,
+                **kwargs,
+            )
             return vision_position_ids.long(), deltas
 
         processor.get_rope_index = types.MethodType(_get_rope_index_long, processor)
         processor.get_llm_pos_ids_for_vision = types.MethodType(model_cls.get_llm_pos_ids_for_vision, processor)
 
-        # Provide audio lengths to verl's generic V1 agent loop via get_rope_index_kwargs.
+        # Provide audio lengths and video timing to verl's generic V1 agent loop.
         def _get_rope_index_kwargs(multi_modal_inputs: dict) -> dict:
-            result = {}
-            seconds = multi_modal_inputs.get("video_second_per_grid")
-            if seconds is not None:
-                result["second_per_grids"] = seconds
+            rope_kwargs = {}
             feature_attention_mask = multi_modal_inputs.get("feature_attention_mask")
             if feature_attention_mask is not None:
-                result["audio_seqlens"] = feature_attention_mask.sum(-1)
-            return result
+                rope_kwargs["audio_seqlens"] = feature_attention_mask.sum(-1)
+            second_per_grids = multi_modal_inputs.get("video_second_per_grid")
+            if second_per_grids is not None:
+                rope_kwargs["second_per_grids"] = second_per_grids
+            return rope_kwargs
 
         processor.get_rope_index_kwargs = _get_rope_index_kwargs
 
-        # Collapse consecutive multimodal pad tokens before vLLM-Omni re-expands
-        # them (token-IDs path still unfixed: https://github.com/vllm-project/vllm/issues/33672);
-        # mirrors verl's qwen2_5_vl_dedup_image_tokens.
-        def _dedup_pad_tokens(self, prompt_ids: list[int]) -> list[int]:
-            tokenizer = getattr(self, "tokenizer", None)
-            if tokenizer is None:
-                return prompt_ids
-            pad_ids: set[int] = set()
-            for tok_attr in ("image_token", "video_token", "audio_token"):
-                tok = getattr(self, tok_attr, None)
-                if tok is None:
-                    continue
-                try:
-                    tid = tokenizer.convert_tokens_to_ids(tok)
-                except Exception:
-                    continue
-                if tid is None or tid == getattr(tokenizer, "unk_token_id", None):
-                    continue
-                pad_ids.add(int(tid))
-            if not pad_ids:
-                return prompt_ids
-            arr = np.asarray(prompt_ids, dtype=np.int64)
-            if arr.size == 0:
-                return prompt_ids
-            is_pad = np.isin(arr, list(pad_ids))
-            keep = np.ones(arr.size, dtype=bool)
-            same_as_prev = is_pad[1:] & is_pad[:-1] & (arr[1:] == arr[:-1])
-            keep[1:] &= ~same_as_prev
-            return arr[keep].tolist()
-
-        processor.dedup_pad_tokens = types.MethodType(_dedup_pad_tokens, processor)
+        processor.dedup_pad_tokens = types.MethodType(collapse_multimodal_tokens, processor)
         return processor
 
     @classmethod
