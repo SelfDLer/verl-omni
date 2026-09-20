@@ -1,6 +1,6 @@
 # Diffusion V1 training
 
-Last updated: 09/15/2026
+Last updated: 09/20/2026
 
 This guide runs the diffusion V1 trainer in synchronous or separate-asynchronous
 mode using the provided Stable Diffusion 3.5 Medium FlowGRPO OCR recipes.
@@ -229,6 +229,9 @@ bash tests/special_e2e/run_flowgrpo_qwen_image_v1_separate_async.sh
 The configurable incomplete-group refill policy above applies to `sync` mode.
 In `separate_async`, the upstream async replay buffer automatically evicts and
 replaces stale or failed prompt groups. `colocate_async` is not yet supported.
+
+See [Ascend NPU profiling](../perf/profiler.md#7-ascend-npu-profiling-npu) for
+configuration, collection windows, and NPU rank-selection constraints.
 
 ## Troubleshooting
 
