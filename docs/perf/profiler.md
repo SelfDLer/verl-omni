@@ -1,6 +1,6 @@
 # Profiling FlowGRPO / diffusion training in VeRL-Omni
 
-Last updated: 09/20/2026.
+Last updated: 09/21/2026.
 
 VeRL-Omni reuses the profiler subsystem from upstream
 [verl](https://github.com/verl-project/verl) (`verl.utils.profiler`) and exposes
@@ -41,10 +41,33 @@ global_profiler:
   steps: null                    # e.g. [1, 2, 5]
   profile_continuous_steps: False
   save_path: outputs/profile
+  relocate_results: False
+  finish_hook_cmd: null
+  finish_hook_all_ranks: False
+  finish_hook_ranks: []
   global_tool_config:
     nsys: { ... }                # see below
     torch_memory: { ... }
 ```
+
+The diffusion per-role profiler configs inherit the following fields from
+`global_profiler`. Override a field under
+`actor_rollout_ref.actor.profiler.<field>` to change it for the actor only.
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `relocate_results` | `False` | Gather supported backend artifacts into `save_path` when collection stops. |
+| `finish_hook_cmd` | `null` | Optional shell command for training workers to run after profiling finishes. `null` disables the command. |
+| `finish_hook_all_ranks` | `False` | Run the finish command on every profiled rank when enabled. |
+| `finish_hook_ranks` | `[]` | Explicit profiled ranks on which to run the finish command. |
+
+For example, set `global_profiler.relocate_results=True` to enable result
+relocation for roles inheriting the global value. To configure an actor-only
+finish command, use `actor_rollout_ref.actor.profiler.finish_hook_cmd` and
+`actor_rollout_ref.actor.profiler.finish_hook_ranks='[0]'`; rank 0 must also
+be selected for actor profiling. In diffusion V1, the command runs after the
+last reachable selected step, rather than after every profiling window.
+Rollout-only collection does not run a training-worker finish command.
 
 ### Per-role profiler fields
 
@@ -380,8 +403,10 @@ Set either role's `profiler.enable=False` to
 collect only the other role. Reward-model profiling is configured separately
 under `reward.reward_model.rollout.profiler` (recipe 6).
 
-For diffusion V1, rollout ranks use the rollout replica numbering. For replica world size
-`W = TP * DP * PP`, selecting rank `r` selects replica `r // W`; collection may
+For diffusion V1, `actor_rollout_ref.rollout.profiler.ranks` contains global
+ranks within the rollout workers, not replica IDs or physical device IDs.
+For replica world size `W = TP * DP * PP`, selecting rank `r` selects replica
+`r // W`; collection may
 include all devices of that replica. With `H` hybrid replicas preceding the
 standalone replicas, standalone ranks begin at `H * W`. For example, eight
 hybrid devices with `TP=2, DP=PP=1` occupy ranks 0–7: actor rank `[0]` and
