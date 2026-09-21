@@ -1,0 +1,24 @@
+# Reference policy using the same model implementation as the actor.
+defaults:
+  - veomni_ref
+  - _self_
+
+# Reference workers share the omni actor config contract.
+_target_: verl_omni.workers.config.omni.OmniVeOmniActorConfig
+
+# Keep actor and reference compute dtypes aligned.
+veomni:
+  # Select the omni engine's additional encoder settings.
+  _target_: verl_omni.workers.config.omni.OmniVeOmniEngineConfig
+
+  # Match actor parameter precision.
+  mixed_precision: ${oc.select:actor_rollout_ref.actor.veomni.mixed_precision,true}
+
+  # Reference encoders never train.
+  freeze_vision_tower: true
+
+  # Reference audio encoders never train.
+  freeze_audio_tower: true
+
+  # Match the actor's modality-dependent execution policy.
+  forward_prefetch: false
