@@ -297,13 +297,13 @@ class PolicyGradientDiffusionTrainerV1SeparateAsync(PolicyGradientDiffusionTrain
         self.standalone_checkpoint_manager.update_weights(self.global_steps)
         self.checkpoint_manager.update_weights(self.global_steps)
 
-    def _profiling_rollout_managers(self):
-        # Standalone generation overlaps actor updates: keep its profiler open
-        # for the whole selected trainer window, including async warmup. Hybrid
-        # replicas join the window when they can contribute training rollouts.
-        managers = [self.standalone_server_manager]
-        if self.hybrid_rollout_config.enable_switch:
-            managers.append(self.llm_server_manager)
+    def _rollout_server_managers(self) -> list:
+        # Unlike the PPO trainer, diffusion must exclude hybrid replicas when
+        # switching is disabled; only standalone replicas generate in that mode.
+        managers = super()._rollout_server_managers() if self.hybrid_rollout_config.enable_switch else []
+        standalone = getattr(self, "standalone_server_manager", None)
+        if standalone is not None:
+            managers.append(standalone)
         return managers
 
     def on_train_begin(self):
@@ -431,6 +431,10 @@ class PolicyGradientDiffusionTrainerV1SeparateAsync(PolicyGradientDiffusionTrain
         )
 
     def on_step_end(self):
+        # _stop_profiling() already moved this step's flag to prev_step_profile.
+        if self.prev_step_profile:
+            self._stop_rollout_profiling()
+
         config = self.hybrid_rollout_config
         with marked_timer("update_weights", self.timing_raw, color="red"):
             self._pending_sync_metrics = dict(

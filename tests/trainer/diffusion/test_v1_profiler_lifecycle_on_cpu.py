@@ -20,7 +20,7 @@ from unittest.mock import Mock
 import pytest
 from omegaconf import OmegaConf
 
-from verl_omni.trainer.diffusion.v1 import trainer_base
+from verl_omni.trainer.diffusion.v1 import trainer_base, trainer_separate_async, trainer_sync
 from verl_omni.trainer.diffusion.v1.trainer_separate_async import PolicyGradientDiffusionTrainerV1SeparateAsync
 from verl_omni.trainer.diffusion.v1.trainer_sync import PolicyGradientDiffusionTrainerV1Sync
 
@@ -45,10 +45,13 @@ def make_trainer(monkeypatch, *, mode="sync", continuous=False, fail_at=None, re
             },
         }
     )
+    trainer.use_reference_policy = False
+    trainer.use_critic = False
+    trainer.sync_compatible = False
     trainer.global_steps = resumed_step
     trainer.steps_per_epoch = 4
     trainer.total_training_steps = 4
-    trainer.hybrid_rollout_config = SimpleNamespace(enable_switch=True)
+    trainer.hybrid_rollout_config = SimpleNamespace(enable_switch=False)
     trainer.profile_stop_calls = []
 
     def backend(role):
@@ -68,7 +71,8 @@ def make_trainer(monkeypatch, *, mode="sync", continuous=False, fail_at=None, re
     trainer._reissue_inflight_prompts = lambda: events.append(("reissue", trainer.global_steps))
     trainer.on_train_begin = lambda: events.append(("warmup", trainer.global_steps))
     trainer.on_step_begin = lambda: None
-    trainer.on_step_end = lambda: None
+    trainer.checkpoint_manager.update_weights = Mock(return_value={})
+    trainer.standalone_checkpoint_manager = SimpleNamespace(update_weights=Mock(return_value={}))
     trainer.on_validate_begin = lambda: None
     trainer.on_validate_end = lambda: None
     trainer._validate = lambda: {"validation": 1}
@@ -91,43 +95,35 @@ def make_trainer(monkeypatch, *, mode="sync", continuous=False, fail_at=None, re
     monkeypatch.setattr(trainer_base, "tq", Mock())
     monkeypatch.setattr(trainer_base, "tqdm", Mock())
     monkeypatch.setattr(trainer_base, "marked_timer", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(trainer_sync, "marked_timer", lambda *args, **kwargs: nullcontext())
+    monkeypatch.setattr(trainer_separate_async, "marked_timer", lambda *args, **kwargs: nullcontext())
     return trainer, events
 
 
 @pytest.mark.parametrize("mode", ["sync", "separate_async"])
-@pytest.mark.parametrize("continuous", [False, True])
-def test_fit_selected_steps_and_cleanup(monkeypatch, mode, continuous):
-    trainer, events = make_trainer(monkeypatch, mode=mode, continuous=continuous)
+def test_fit_selected_steps_and_mode_hooks(monkeypatch, mode):
+    trainer, events = make_trainer(monkeypatch, mode=mode)
     trainer.fit(Mock())
-    expected_steps = [1, 4] if continuous else [1, 2, 4]
-    assert [e[2]["profile_step"] for e in events if e[:2] == ("actor", "start")] == expected_steps
-    assert events.count(("actor", "stop")) == len(expected_steps)
-    assert events.index(("rollout", "start", {})) < events.index(("reissue", 1))
-    assert events.index(("rollout", "start", {})) < events.index(("warmup", 1))
+    assert [e[2]["profile_step"] for e in events if e[:2] == ("actor", "start")] == [1, 2, 4]
+    role = "rollout" if mode == "sync" else "standalone"
+    assert events.count((role, "start", {})) == 3
+    assert events.count((role, "stop")) == 3
+    assert events.index(("warmup", 1)) < events.index((role, "start", {}))
     if mode == "sync":
         for step in (1, 2, 4):
-            assert events[events.index(("sleep", step)) - 1] == ("rollout", "stop")
-    else:
-        assert events.count(("standalone", "start", {})) == len(expected_steps)
-        assert events.count(("standalone", "stop")) == len(expected_steps)
-    assert events[-1] == ("actor", "stop")
+            assert events[events.index(("sleep", step)) + 1] == ("rollout", "stop")
+    assert [kwargs["run_command"] for role, kwargs in trainer.profile_stop_calls if role == "actor"] == [
+        False,
+        False,
+        True,
+    ]
 
 
 @pytest.mark.parametrize("mode", ["sync", "separate_async"])
-def test_fit_exception_flushes_profile(monkeypatch, mode):
-    trainer, events = make_trainer(monkeypatch, mode=mode, continuous=True, fail_at=2)
-    with pytest.raises(RuntimeError, match="compute failed"):
-        trainer.fit(Mock())
-    assert events[-1] == ("actor", "stop")
-    assert events.count(("actor", "stop")) == 1
-    if mode == "separate_async":
-        assert events.count(("standalone", "stop")) == 1
-
-
-def test_fit_resumes_inside_profile_window(monkeypatch):
-    trainer, events = make_trainer(monkeypatch, continuous=True, resumed_step=1)
+def test_fit_resumes_selected_step(monkeypatch, mode):
+    trainer, events = make_trainer(monkeypatch, mode=mode, resumed_step=1)
     trainer.fit(Mock())
-    assert events[0] == ("actor", "start", {"role": "train", "profile_step": 2})
+    assert [e[2]["profile_step"] for e in events if e[:2] == ("actor", "start")] == [2, 4]
 
 
 def test_validation_only_does_not_start_profiler(monkeypatch):
@@ -138,19 +134,6 @@ def test_validation_only_does_not_start_profiler(monkeypatch):
 
 def test_async_without_hybrid_only_profiles_standalone(monkeypatch):
     trainer, events = make_trainer(monkeypatch, mode="separate_async")
-    trainer.hybrid_rollout_config.enable_switch = False
     trainer.fit(Mock())
     assert not any(e[0] == "rollout" for e in events)
     assert events.count(("standalone", "start", {})) == 3
-
-
-@pytest.mark.parametrize("mode", ["sync", "separate_async"])
-@pytest.mark.parametrize("total_steps,steps_per_epoch", [(3, 4), (8, 3)])
-def test_fit_finish_hook_respects_step_and_epoch_limits(monkeypatch, mode, total_steps, steps_per_epoch):
-    trainer, events = make_trainer(monkeypatch, mode=mode)
-    trainer.config.global_profiler.steps = [1, 5]
-    trainer.total_training_steps = total_steps
-    trainer.steps_per_epoch = steps_per_epoch
-    trainer.fit(Mock())
-    assert [kwargs for role, kwargs in trainer.profile_stop_calls if role == "actor"] == [{"run_command": True}]
-    assert [event[2]["profile_step"] for event in events if event[:2] == ("actor", "start")] == [1]

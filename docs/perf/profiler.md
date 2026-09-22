@@ -28,9 +28,10 @@ verl conventions:
    [`profiler/profiler.yaml`](https://github.com/verl-project/verl-omni/blob/main/verl_omni/trainer/config/profiler/profiler.yaml)
    and selects which ranks to profile and the role-local tool config.
 
-A typical training step automatically calls `start_profile` before the step
-begins and `stop_profile` after validation, so as long as the global
-`steps` list contains the current step the profiler is engaged.
+Trainers automatically start and stop collection for steps selected by the
+global `steps` list. Diffusion V1 places these calls around `step()`, following
+the upstream V1 trainer structure. Non-continuous windows therefore exclude
+the subsequent checkpoint, weight-sync, and validation phases.
 
 ### Global profiler fields
 
@@ -391,9 +392,9 @@ These fields already exist, so use plain `key=value` overrides without a `+` pre
 Keep `rollout.profiler.tool_config.npu.discrete=True` for engine-side collection.
 The example also uses actor `discrete=True` to collect individual training stages.
 Use this combination when collecting actor and rollout together.
-For diffusion V1 `sync`, also keep
-`global_profiler.profile_continuous_steps=False`: rollout collection stops
-before replicas sleep and actor computation begins. Actor-only collection can
+For diffusion V1 rollout collection in either mode, keep
+`global_profiler.profile_continuous_steps=False`. Following upstream V1, sync
+stops rollout profiling after replicas sleep; separate_async stops it at step end. Actor-only collection can
 use either `discrete` value where supported by the backend.
 
 For diffusion V1 `separate_async`, set `all_ranks=False` and select actor and
@@ -559,17 +560,19 @@ recipe's own values, minding two couplings:
   [`verl/trainer/ppo/ray_trainer.py`](https://github.com/verl-project/verl/blob/main/verl/trainer/ppo/ray_trainer.py).
 * `global_profiler.profile_continuous_steps=True` keeps a single profiling
   database open across consecutive steps in `global_profiler.steps`, which is
-  helpful for analysing inter-step behaviour. In diffusion V1, this keeps actor
-  and async rollout windows open across consecutive selected steps. Sync rollout
-  always stops before replicas sleep and restarts for the next selected step.
+  helpful for analysing inter-step behaviour. Diffusion V1 follows
+  `verl/trainer/ppo/v1/trainer_base.py`: use continuous windows for actor-only
+  collection, and non-continuous windows when collecting rollout traces.
 * In the legacy diffusion trainer, for the rollout servers, the trainer calls
   `llm_server_manager.start_profile()`/`stop_profile()` around the generation
   phase of profiled steps; the servers record through vLLM's built-in torch
   profiler (recipe 5). The reward-model servers are driven the same way
   through `verl_omni.reward_loop.OmniRewardLoopManager` (recipe 6).
 * `relocate_results` and `finish_hook_*` are forwarded to upstream workers.
-  Diffusion V1 runs training-worker finish hooks after the last reachable
-  selected step, ignoring selections beyond the step or epoch limit.
+  Diffusion V1 follows upstream finish-hook scheduling: a closing training-worker
+  window runs the hook on the largest configured profile step, or on the final
+  training step if that step is profiled. Keep selected steps within the run's
+  step and epoch limits.
   Rollout-only collection does not run a training-worker finish hook.
 
 ## Further reading

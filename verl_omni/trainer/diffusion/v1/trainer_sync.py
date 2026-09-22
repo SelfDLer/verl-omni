@@ -63,7 +63,7 @@ class PolicyGradientDiffusionTrainerV1Sync(PolicyGradientDiffusionTrainerV1):
             self.checkpoint_manager.update_weights(self.global_steps)
 
     def on_sample_end(self):
-        if (profiler := getattr(self, "_profiler", None)) is not None:
-            profiler.stop_rollout()
         # sleep all replicas to discard weights and (no-op) KV cache
         self.checkpoint_manager.sleep_replicas()
+        if self.curr_step_profile:
+            self._stop_rollout_profiling()
