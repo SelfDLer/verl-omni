@@ -1,6 +1,6 @@
 # Profiling FlowGRPO / diffusion training in VeRL-Omni
 
-Last updated: 09/21/2026.
+Last updated: 09/22/2026.
 
 VeRL-Omni reuses the profiler subsystem from upstream
 [verl](https://github.com/verl-project/verl) (`verl.utils.profiler`) and exposes
@@ -50,9 +50,7 @@ global_profiler:
     torch_memory: { ... }
 ```
 
-The diffusion per-role profiler configs inherit the following fields from
-`global_profiler`. Override a field under
-`actor_rollout_ref.actor.profiler.<field>` to change it for the actor only.
+The following optional fields control result relocation and finish commands.
 
 | Field | Default | Purpose |
 | --- | --- | --- |
@@ -60,14 +58,6 @@ The diffusion per-role profiler configs inherit the following fields from
 | `finish_hook_cmd` | `null` | Optional shell command for training workers to run after profiling finishes. `null` disables the command. |
 | `finish_hook_all_ranks` | `False` | Run the finish command on every profiled rank when enabled. |
 | `finish_hook_ranks` | `[]` | Explicit profiled ranks on which to run the finish command. |
-
-For example, set `global_profiler.relocate_results=True` to enable result
-relocation for roles inheriting the global value. To configure an actor-only
-finish command, use `actor_rollout_ref.actor.profiler.finish_hook_cmd` and
-`actor_rollout_ref.actor.profiler.finish_hook_ranks='[0]'`; rank 0 must also
-be selected for actor profiling. In diffusion V1, the command runs after the
-last reachable selected step, rather than after every profiling window.
-Rollout-only collection does not run a training-worker finish command.
 
 ### Per-role profiler fields
 
@@ -100,6 +90,19 @@ The same block exists under `actor_rollout_ref.ref.profiler` and
 `actor_rollout_ref.rollout.profiler`. Generation runs in separate vLLM-Omni
 server processes, not in the actor worker, so it has its own profiler driven
 by `actor_rollout_ref.rollout.profiler` (see recipe 5).
+
+Global values for `save_path`, `relocate_results`, and `finish_hook_*` provide
+defaults for the per-role configs. Set a field under
+`actor_rollout_ref.actor.profiler.<field>` to override it for the actor.
+For example, `global_profiler.relocate_results=True` enables result relocation
+for roles inheriting that value; an actor override of `False` disables it
+for the actor only.
+
+To configure an actor-only finish command, set
+`actor_rollout_ref.actor.profiler.finish_hook_cmd` and
+`actor_rollout_ref.actor.profiler.finish_hook_ranks='[0]'`. Rank 0 must also
+be selected for actor profiling. See [Implementation notes](#implementation-notes)
+for finish-command timing.
 
 All the profiler keys below already exist in the composed config, so use
 plain `key=value` overrides — a `+key=value` append fails with "An item is
