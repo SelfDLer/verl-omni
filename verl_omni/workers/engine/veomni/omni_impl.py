@@ -22,6 +22,7 @@ from veomni.distributed.offloading import build_activation_offloading_context
 from veomni.distributed.torch_parallelize import build_parallelize_model
 from veomni.models.auto import build_foundation_model
 from verl.utils import tensordict_utils as tu
+from verl.utils.device import get_device_id
 from verl.workers.engine.base import EngineRegistry
 from verl.workers.engine.veomni.transformer_impl import (
     OmniSequenceShardCollator,
@@ -109,6 +110,17 @@ class OmniVeOmniEngine(VeOmniEngineWithLMHead):
             broadcast_model_weights_from_rank0=True,
             fqn_to_index_mapping=load_safetensors_index(self.model_config.local_path),
         )
+        if self.engine_config.enable_fsdp_offload:
+            # FSDP owns parameter/gradient placement; disable manual stage offload.
+            self._is_offload_param = False
+            self._is_offload_optimizer = False
+            self._uses_fsdp2_cpu_offload_policy = True
+            # Keep parameter shards on CPU and place only buffers on the compute device.
+            compute_device = get_device_id()
+            for submodule in module.modules():
+                for name, buffer in submodule.named_buffers(recurse=False):
+                    if buffer is not None:
+                        submodule._buffers[name] = buffer.to(compute_device)
         self.module = module
         self.optimizer = None if self.engine_config.forward_only else self._build_optimizer(module)
         self.lr_scheduler = None if self.optimizer is None else self._build_lr_scheduler(self.optimizer)

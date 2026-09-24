@@ -64,6 +64,7 @@ def engine_module(monkeypatch):
         "veomni.models.auto",
         "verl",
         "verl.utils",
+        "verl.utils.device",
         "verl.workers",
         "verl.workers.engine",
         "verl.workers.engine.base",
@@ -82,11 +83,15 @@ def engine_module(monkeypatch):
     mocks["verl.utils"].tensordict_utils = SimpleNamespace(
         get_non_tensor_data=lambda data, key, default: data.get(key, default)
     )
+    mocks["verl.utils.device"].get_device_id = MagicMock(return_value="meta")
     mocks["verl.workers.engine.base"].EngineRegistry = SimpleNamespace(register=lambda **kwargs: lambda cls: cls)
 
     class Parent:
         def __init__(self, model_config, engine_config, optimizer_config, checkpoint_config, **kwargs):
             self.model_config, self.engine_config = model_config, engine_config
+            self._is_offload_param = engine_config.param_offload
+            self._is_offload_optimizer = engine_config.optimizer_offload
+            self._uses_fsdp2_cpu_offload_policy = engine_config.enable_fsdp_offload
 
         def _get_model_config_path(self):
             return self.model_config.local_path
@@ -138,6 +143,8 @@ def configs():
         freeze_audio_tower=True,
         enable_full_shard=True,
         enable_fsdp_offload=False,
+        param_offload=True,
+        optimizer_offload=True,
         basic_modules=[],
         enable_reentrant=False,
         forward_prefetch=False,
@@ -156,14 +163,22 @@ def test_unsupported_modes_fail_before_distributed_init(engine_module, configs, 
 
 
 @pytest.mark.parametrize("forward_only", [False, True])
-def test_build_preserves_native_forward_and_freezes_before_sharding(engine_module, configs, forward_only, monkeypatch):
+@pytest.mark.parametrize("native_offload", [False, True])
+def test_build_preserves_native_forward_and_freezes_before_sharding(
+    engine_module, configs, forward_only, native_offload, monkeypatch
+):
     model_config, engine_config = configs
     engine_config.forward_only = forward_only
+    engine_config.enable_fsdp_offload = native_offload
     model = torch.nn.Module()
     model.thinker = torch.nn.Module()
     model.thinker.visual = torch.nn.Linear(2, 2)
     model.thinker.audio_tower = torch.nn.Linear(2, 2)
     model.thinker.model = torch.nn.Linear(2, 2)
+    model.register_buffer("root_buffer", torch.ones(2))
+    model.thinker.audio_tower.register_buffer("position_buffer", torch.ones(2), persistent=False)
+    model.thinker.audio_tower.register_buffer("unused_buffer", None)
+    original_parameters = tuple(model.parameters())
     model.config = SimpleNamespace(thinker_config=SimpleNamespace())
     model._no_split_modules = ["Decoder", "VisionBlock", "AudioBlock"]
     native_forward = model.forward
@@ -185,6 +200,24 @@ def test_build_preserves_native_forward_and_freezes_before_sharding(engine_modul
     engine._build_model_optimizer()
     assert engine.model_adapter_cls is Qwen3OmniThinkerAdapter
     assert (engine.optimizer is None) == forward_only
+    assert engine._is_offload_param is not native_offload
+    assert engine._is_offload_optimizer is not native_offload
+    assert engine._uses_fsdp2_cpu_offload_policy is native_offload
+    assert engine_config.param_offload and engine_config.optimizer_offload
+    # Meta stands in for the accelerator: buffers move, but optimizer parameters must not.
+    buffer_device = "meta" if native_offload else "cpu"
+    assert model.root_buffer.device.type == buffer_device
+    assert model.thinker.audio_tower.position_buffer.device.type == buffer_device
+    assert model.thinker.audio_tower.unused_buffer is None
+    for original, parameter in zip(original_parameters, model.parameters(), strict=True):
+        assert parameter is original
+        assert parameter.device.type == "cpu"
+    if engine.optimizer is not None:
+        assert all(p.device.type == "cpu" for group in engine.optimizer.param_groups for p in group["params"])
+    if native_offload:
+        engine_module.get_device_id.assert_called_once_with()
+    else:
+        engine_module.get_device_id.assert_not_called()
     params, metadata = engine.get_per_tensor_param()
     assert all(t.dtype == torch.bfloat16 for _, t in params)
     assert metadata is None
