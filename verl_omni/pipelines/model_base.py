@@ -645,6 +645,27 @@ class OmniModelBase(ABC):
         return module
 
     @classmethod
+    def configure_veomni_model(cls, module, model_config):
+        """Configure a native VeOmni model before parallel wrapping.
+
+        This is separate from ``configure_model``: HF forward redirection and
+        sharding hints may not be valid for VeOmni's native model wrappers.
+        Adapters must explicitly opt in to this backend.
+        """
+        raise NotImplementedError(f"{cls.__name__} does not support native VeOmni model configuration.")
+
+    @classmethod
+    def prepare_veomni_inputs(
+        cls, model_inputs: dict[str, Any], full_input_ids: torch.Tensor, hf_config
+    ) -> dict[str, Any]:
+        """Adapt processor outputs using full-sequence IDs before encoder SP slicing.
+
+        ``hf_config`` is the loaded native model's configuration. The engine
+        owns sequence packing, padding and parallel slicing.
+        """
+        raise NotImplementedError(f"{cls.__name__} does not support native VeOmni inputs.")
+
+    @classmethod
     def prepare_model_inputs(cls, model_inputs: dict[str, Any], micro_batch, model_config) -> dict[str, Any]:
         """Add model-native rollout data to an actor replay forward call.
 

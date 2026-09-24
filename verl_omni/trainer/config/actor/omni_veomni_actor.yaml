@@ -1,0 +1,24 @@
+# VeOmni actor with the omni training loss contract.
+defaults:
+  - veomni_actor
+  - _self_
+
+# Override the FSDP actor target selected by omni_trainer.
+_target_: verl_omni.workers.config.omni.OmniVeOmniActorConfig
+
+# Configure both encoders before distributed wrapping.
+veomni:
+  # Select the omni engine's additional encoder settings.
+  _target_: verl_omni.workers.config.omni.OmniVeOmniEngineConfig
+
+  # Preserve the common actor switch for vision freezing.
+  freeze_vision_tower: ${oc.select:actor_rollout_ref.actor.freeze_vision_tower,false}
+
+  # Freeze audio independently of the vision tower.
+  freeze_audio_tower: false
+
+  # Portable baseline; expert parallelism requires a device-specific fused kernel.
+  moe_implementation: eager
+
+  # Modality-dependent execution does not have a fixed layer prefetch order.
+  forward_prefetch: false

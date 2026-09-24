@@ -12,6 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .diffusion_impl import VeOmniDiffusionEngine
+__all__ = ["OmniVeOmniEngine", "VeOmniDiffusionEngine"]
 
-__all__ = ["VeOmniDiffusionEngine"]
+
+def __getattr__(name):
+    if name == "OmniVeOmniEngine":
+        from .omni_impl import OmniVeOmniEngine
+
+        return OmniVeOmniEngine
+    if name == "VeOmniDiffusionEngine":
+        from .diffusion_impl import VeOmniDiffusionEngine
+
+        return VeOmniDiffusionEngine
+    raise AttributeError(name)

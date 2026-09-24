@@ -20,6 +20,11 @@ from .fsdp import (  # noqa: F401
 from .fsdp.omni_impl import OmniFSDPEngine  # noqa: F401
 
 try:
+    from .veomni import OmniVeOmniEngine  # noqa: F401
+except ImportError:
+    OmniVeOmniEngine = None
+
+try:
     from .veomni import VeOmniDiffusionEngine  # noqa: F401
 except ImportError:
     VeOmniDiffusionEngine = None
@@ -31,4 +36,5 @@ __all__ = [
     "DiffusersFSDPEngine",
     "VeOmniDiffusionEngine",
     "OmniFSDPEngine",
+    "OmniVeOmniEngine",
 ]

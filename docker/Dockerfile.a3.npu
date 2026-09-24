@@ -19,6 +19,9 @@ ARG VLLM_OMNI_REF=""
 ARG VERL_REPO="https://github.com/verl-project/verl.git"
 ARG VERL_REF=""
 
+ARG VEOMNI_REPO="https://github.com/ByteDance-Seed/VeOmni.git"
+ARG VEOMNI_REF=""
+
 ARG VERL_OMNI_REPO="https://github.com/verl-project/verl-omni.git"
 ARG VERL_OMNI_REF="main"
 
@@ -42,6 +45,7 @@ WORKDIR /workspace
 RUN mkdir -p /workspace/src /workspace/pins
 
 COPY .github/verl_pin.txt \
+     .github/veomni_pin.txt \
      .github/vllm_ascend_pin.txt \
      .github/vllm_omni_pin.txt \
      /workspace/pins/
@@ -172,6 +176,16 @@ RUN git clone \
     python3 -m pip install -e ".[ocr]" \
         --extra-index-url ${ASCEND_PIP_INDEX_URL} \
         --extra-index-url ${PYTORCH_CPU_INDEX_URL}
+
+# VeOmni's NPU extra pins torch 2.7.1; preserve this image's torch 2.10 stack.
+RUN VEOMNI_REF="${VEOMNI_REF:-$(tr -d '[:space:]' < /workspace/pins/veomni_pin.txt)}" && \
+    git clone ${VEOMNI_REPO} /workspace/src/veomni && \
+    cd /workspace/src/veomni && \
+    git checkout ${VEOMNI_REF} && \
+    python3 -m pip install --no-deps -e . && \
+    python3 -m pip install \
+        'blobfile>=3.0.0' 'torchdata>=0.8.0,<1.0' 'tiktoken>=0.9.0' \
+        'einops>=0.8.1' timm wandb scipy decorator
 
 RUN python3 -m pip install --force-reinstall \
         torch==2.10.0+cpu \

@@ -15,29 +15,59 @@
 
 Implements ``OmniModelBase`` for thinker-stage training of
 Qwen3-Omni: sub-module stripping, forward redirection,
-processor/tokenizer configuration, and LoRA key normalization for
-vLLM-Omni weight sync.
+processor/tokenizer configuration, and native VeOmni model/input adaptation.
 """
 
+import inspect
 import json
 import logging
 import os
+import sys
+from types import MethodType
 from typing import Any
 
 import numpy as np
+import torch
 
 from verl_omni.pipelines.model_base import OmniModelBase
 
 logger = logging.getLogger(__name__)
 
 
+def _restore_verl_position_layout(module, args, kwargs):
+    positions = kwargs.get("position_ids")
+    # verl supplies (4, batch, tokens). VeOmni 0.1.11 mistakes batch=3 for
+    # its native (batch, 3, tokens) layout and transposes it in Thinker.forward.
+    if positions is not None and positions.ndim == 3 and positions.shape[:2] == (3, 4):
+        kwargs["position_ids"] = positions.transpose(0, 1).contiguous()
+    return args, kwargs
+
+
+def _audio_attention_forward(module, hidden_states, cu_seqlens, attention_mask=None, **kwargs):
+    # SDPA/eager ignore FA's cu_seqlens. Run each audio window independently
+    # so adjacent clips (and windows within a clip) cannot attend to each other.
+    boundaries = cu_seqlens.tolist()
+    outputs = []
+    for start, end in zip(boundaries[:-1], boundaries[1:], strict=True):
+        mask = None if attention_mask is None else attention_mask[..., start:end, start:end]
+        outputs.append(
+            module._veomni_window_forward(
+                hidden_states[start:end],
+                cu_seqlens.new_tensor([0, end - start]),
+                attention_mask=mask,
+                **kwargs,
+            )
+        )
+    return torch.cat(outputs, dim=0)
+
+
 @OmniModelBase.register("Qwen3OmniMoeForConditionalGeneration", stage="thinker")
 class Qwen3OmniThinkerAdapter(OmniModelBase):
     """Thinker-stage training adapter for Qwen3-Omni.
 
-    Handles model setup that is required before verl's FSDP engine
-    loads and wraps the model: sub-module stripping, forward redirection
-    to the thinker component, and processor/tokenizer configuration.
+    Provides separate setup hooks for HF/FSDP and native VeOmni models,
+    alongside shared processor/tokenizer configuration. Native VeOmni hooks
+    preserve the backend's forward wrapper and sharding hints.
     """
 
     @classmethod
@@ -62,6 +92,50 @@ class Qwen3OmniThinkerAdapter(OmniModelBase):
         module.set_input_embeddings = module.thinker.set_input_embeddings
         module._no_split_modules = ["Qwen3OmniMoeThinkerTextDecoderLayer"]
         return module
+
+    @classmethod
+    def configure_veomni_model(cls, module, model_config):
+        """Bridge pinned VeOmni APIs without replacing native forward or split hints."""
+        if getattr(module, "_omni_compat_configured", False):
+            return module
+        modeling = sys.modules[type(module.thinker).__module__]
+        create_mask = modeling.create_causal_mask
+        if "cache_position" not in inspect.signature(create_mask).parameters:
+            # Transformers 5.13+ derives query positions from the cache/input shape.
+            # Patch only VeOmni's generated module, not Transformers' global API.
+            def create_causal_mask(*args, cache_position=None, **kwargs):
+                return create_mask(*args, **kwargs)
+
+            modeling.create_causal_mask = create_causal_mask
+        module.thinker.model.register_forward_pre_hook(_restore_verl_position_layout, with_kwargs=True)
+        for layer in module.thinker.audio_tower.layers:
+            attention = layer.self_attn
+            if attention.config._attn_implementation in ("sdpa", "eager"):
+                attention._veomni_window_forward = attention.forward
+                attention.forward = MethodType(_audio_attention_forward, attention)
+        module._omni_compat_configured = True
+        return module
+
+    @classmethod
+    def prepare_veomni_inputs(cls, model_inputs: dict, full_input_ids: torch.Tensor, hf_config) -> dict:
+        """Add global modality masks and flatten the HF processor's valid audio frames."""
+        thinker_config = hf_config.thinker_config
+        for modality in ("image", "video", "audio"):
+            model_inputs[f"{modality}_mask"] = full_input_ids == getattr(thinker_config, f"{modality}_token_id")
+
+        features = model_inputs.get("input_features")
+        feature_mask = model_inputs.pop("feature_attention_mask", None)
+        if features is not None:
+            if features.ndim != 3 or feature_mask is None:
+                raise ValueError("VeOmni expects HF input_features (clips, mel, frames) and feature_attention_mask.")
+            if feature_mask.shape != (features.shape[0], features.shape[2]):
+                raise ValueError("feature_attention_mask must match the clip and frame dimensions of input_features.")
+            feature_mask = feature_mask.to(device=features.device, dtype=torch.bool)
+            model_inputs["audio_feature_lengths"] = feature_mask.sum(-1).to(torch.long)
+            model_inputs["input_features"] = features.transpose(1, 2)[feature_mask].contiguous()
+        elif feature_mask is not None:
+            raise ValueError("feature_attention_mask was provided without input_features.")
+        return model_inputs
 
     @classmethod
     def configure_processor(cls, model_path: str, model_config) -> Any:
