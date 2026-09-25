@@ -11,9 +11,21 @@ python codex_test/veomni_memory/collect_env.py --output-dir codex_test/veomni_me
 python codex_test/veomni_memory/summarize_profile.py --profile-root /absolute/path/to/ONE_RUN --output-dir codex_test/veomni_memory/results/inventory_first --inventory-only --top-k 20
 ```
 
-回传 `env_first/environment.json`，以及 `inventory_first/summary.md`、`inventory_first/summary.json`。只读清单模式下三个 CSV 只有表头，无需回传。环境报告不读取训练样本、权重值或完整环境变量；包含软件实际导入路径、安装元数据、Git 状态、允许列表中的设备配置、公开 Python 实现的少量源码片段。**这个独立进程不能证明 Ray worker 的实际对象状态。** 检查报告内容后分享即可。
+上述文件先留在服务器。环境报告不读取训练样本、权重值或完整环境变量，但包含软件实际导入路径、Git 状态和源码片段。**这个独立进程不能证明 Ray worker 的实际对象状态。** 已经回传过环境报告就无需重复采集。
 
-已知 schema 或存在 Chrome trace 时，可直接去掉 `--inventory-only`，使用另一个 `--output-dir`。此时回传五个文件：`summary.md`、`summary.json`、`cpu_empty_top.csv`、`collectives_top.csv`、`uncertain_top.csv`。`local_events.sqlite`、原始 DB/trace 和详细中间结果留在服务器。通常返回文件在 5 MB 内；环境报告通常不足 150 KB。结果目录自动写入 `.gitignore`。
+## 回传大小受限：只导出一个最多 2 KiB 的文件
+
+对已经生成的 `summary.json` 执行下面的命令，不重跑训练、不重扫 profiling、不导入 torch，也不联网：
+
+```bash
+python codex_test/veomni_memory/export_brief.py --summary codex_test/veomni_memory/results/inventory_first/summary.json --output codex_test/veomni_memory/results/brief.txt --max-bytes 2048
+```
+
+只需检查并回传 `brief.txt`，无需回传其他文件。上限按完整文件的 UTF-8 字节数计算（包含换行），默认 2048 字节，远低于 100 KB；命令会打印实际大小。支持 `--max-bytes` 调节，最小 512 字节。输出文件须不存在，重复导出时换一个文件名。工具合并重复 schema，仅保留文件类型统计、表名、列名/类型及出现次数，不输出文件路径、环境源码、事件值或错误原文；schema 名称仍须按公司要求检查。
+
+每行是独立 JSON；`schema` 是本摘要中的编号，`offset` 是该组列的起始位置。空间不足时省略整行，末行 `schema_records_omitted` 明确计数；上游清单本身也可能已截断。该文件仅用于决定下一步 schema 适配，不能据此判断性能或根因。需要更多信息时再定向导出，勿把分片作为绕过总量限制的办法。
+
+已知 schema 或存在 Chrome trace 时，可去掉 `--inventory-only`，使用另一个 `--output-dir`。生成的 `summary.md`、`summary.json`、CSV、`local_events.sqlite` 以及原始 DB/trace 均先留在服务器；不再要求整套回传。结果目录自动写入 `.gitignore`。
 
 ## 首轮解析能力和边界
 

@@ -32,6 +32,54 @@ SPEC = importlib.util.spec_from_file_location("summary", MODULE)
 summary = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(summary)
 
+BRIEF_SPEC = importlib.util.spec_from_file_location("brief", MODULE.with_name("export_brief.py"))
+brief = importlib.util.module_from_spec(BRIEF_SPEC)
+BRIEF_SPEC.loader.exec_module(brief)
+
+
+class BriefTests(unittest.TestCase):
+    def test_utf8_byte_cap_and_explicit_omissions(self):
+        report = {
+            "format_version": 1,
+            "inventory": [{"format": "csv", "columns": ["内存字段" + str(i) for i in range(300)]}],
+        }
+        for cap in (512, 1024, 2048, 100000):
+            result = brief.render(report, cap)
+            self.assertLessEqual(len(result), cap)
+            rows = [json.loads(row) for row in result.decode("utf-8").splitlines()]
+            footer = rows[-1]
+            self.assertEqual(footer["schema_records_total"], len(rows) - 2 + footer["schema_records_omitted"])
+            self.assertEqual(footer["schema_records_omitted"] > 0, cap < 100000)
+
+    def test_deduplication_without_paths_or_raw_events(self):
+        entry = {
+            "format": "sqlite",
+            "path": "/private/rank0/trace.db",
+            "bytes": 9000,
+            "tables": [{"name": "MEMORY", "columns": [{"name": "active", "type": "INT"}]}],
+        }
+        report = {
+            "format_version": 1,
+            "inventory": [entry, {**entry, "path": "/private/rank1/trace.db"}],
+            "long_cpu_empty": [{"secret": "raw_event"}],
+            "capability_gaps": {"/private/error": 1},
+        }
+        before = json.dumps(report)
+        result = brief.render(report)
+        rows = [json.loads(row) for row in result.splitlines()]
+        self.assertEqual(rows[0]["unique_schemas"], 1)
+        self.assertEqual(rows[1]["occurrences"], 2)
+        self.assertEqual(rows[1]["columns"], [["active", "INT"]])
+        self.assertNotIn(b"/private", result)
+        self.assertNotIn(b"raw_event", result)
+        self.assertEqual(json.dumps(report), before)
+
+    def test_reject_invalid_budget_and_wrong_report(self):
+        with self.assertRaises(ValueError):
+            brief.render({"format_version": 1, "inventory": []}, 100)
+        with self.assertRaises(ValueError):
+            brief.render({"packages": {}})
+
 
 @contextmanager
 def fixture_directory():
