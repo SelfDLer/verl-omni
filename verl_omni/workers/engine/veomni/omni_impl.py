@@ -129,6 +129,10 @@ class OmniVeOmniEngine(VeOmniEngineWithLMHead):
             self.model_config.enable_gradient_checkpointing,
             self.engine_config.activation_gpu_limit,
         )
+        if os.environ.get("VEOMNI_MEMORY_PROBE") == "1":
+            from codex_test.veomni_memory.worker_probe import install
+
+            install(self)
 
     def _apply_veomni_input_transforms(self, model_inputs, micro_batch):
         packed = tu.get_non_tensor_data(micro_batch, "use_remove_padding", default=True)

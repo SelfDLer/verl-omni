@@ -1,0 +1,336 @@
+[
+  {
+    "label": "verl",
+    "repository": "verl-project/verl",
+    "revision": "fefb080262e1c015a0ea05f958822a6a512dc795",
+    "path": "verl/workers/engine/veomni/transformer_impl.py",
+    "url": "https://raw.githubusercontent.com/verl-project/verl/fefb080262e1c015a0ea05f958822a6a512dc795/verl/workers/engine/veomni/transformer_impl.py",
+    "sha256": "65b02a6cdff46dadedf9f24fa30ee1a4e31b1facb7a51619d0028d18fc9dfe53",
+    "bytes": 44408
+  },
+  {
+    "label": "verl",
+    "repository": "verl-project/verl",
+    "revision": "fefb080262e1c015a0ea05f958822a6a512dc795",
+    "path": "verl/workers/engine/base.py",
+    "url": "https://raw.githubusercontent.com/verl-project/verl/fefb080262e1c015a0ea05f958822a6a512dc795/verl/workers/engine/base.py",
+    "sha256": "c3d0f88e32f8fe044bf7c4d249dfc4cfcee66ccc89b9850d971798b1b20f6a92",
+    "bytes": 17777
+  },
+  {
+    "label": "verl",
+    "repository": "verl-project/verl",
+    "revision": "fefb080262e1c015a0ea05f958822a6a512dc795",
+    "path": "verl/workers/engine/veomni/utils.py",
+    "url": "https://raw.githubusercontent.com/verl-project/verl/fefb080262e1c015a0ea05f958822a6a512dc795/verl/workers/engine/veomni/utils.py",
+    "sha256": "787d657e7461867014f0189a3a680b5c363417d9a2e121fbb5434eea3a857e39",
+    "bytes": 18812
+  },
+  {
+    "label": "verl",
+    "repository": "verl-project/verl",
+    "revision": "fefb080262e1c015a0ea05f958822a6a512dc795",
+    "path": "verl/workers/engine_workers.py",
+    "url": "https://raw.githubusercontent.com/verl-project/verl/fefb080262e1c015a0ea05f958822a6a512dc795/verl/workers/engine_workers.py",
+    "sha256": "1d9be0846e70bf1c668776f7ff3403bb420171e6b42766c27f5a1261ac94a52b",
+    "bytes": 40466
+  },
+  {
+    "label": "verl",
+    "repository": "verl-project/verl",
+    "revision": "fefb080262e1c015a0ea05f958822a6a512dc795",
+    "path": "verl/workers/config/engine.py",
+    "url": "https://raw.githubusercontent.com/verl-project/verl/fefb080262e1c015a0ea05f958822a6a512dc795/verl/workers/config/engine.py",
+    "sha256": "9951ac573bde7eb4455c7b9ccb8971b2046eccd23f4df4dbc20187027003506b",
+    "bytes": 35057
+  },
+  {
+    "label": "verl",
+    "repository": "verl-project/verl",
+    "revision": "fefb080262e1c015a0ea05f958822a6a512dc795",
+    "path": "verl/workers/config/actor.py",
+    "url": "https://raw.githubusercontent.com/verl-project/verl/fefb080262e1c015a0ea05f958822a6a512dc795/verl/workers/config/actor.py",
+    "sha256": "997e346dd2e45aa114cde30414d9cbf7dc49a9e05afc765b6b6ed4c6896a639a",
+    "bytes": 17988
+  },
+  {
+    "label": "verl",
+    "repository": "verl-project/verl",
+    "revision": "fefb080262e1c015a0ea05f958822a6a512dc795",
+    "path": "verl/trainer/config/actor/veomni_actor.yaml",
+    "url": "https://raw.githubusercontent.com/verl-project/verl/fefb080262e1c015a0ea05f958822a6a512dc795/verl/trainer/config/actor/veomni_actor.yaml",
+    "sha256": "ce51aff0c9cbde17b818e2997767de8a30433a30e2951e8599ae05a78f267f0d",
+    "bytes": 799
+  },
+  {
+    "label": "verl",
+    "repository": "verl-project/verl",
+    "revision": "fefb080262e1c015a0ea05f958822a6a512dc795",
+    "path": "verl/trainer/config/engine/veomni.yaml",
+    "url": "https://raw.githubusercontent.com/verl-project/verl/fefb080262e1c015a0ea05f958822a6a512dc795/verl/trainer/config/engine/veomni.yaml",
+    "sha256": "ac9caae564b463ddad09e8126961b7f54215335c65d64a6c19e1059022894594",
+    "bytes": 3635
+  },
+  {
+    "label": "verl",
+    "repository": "verl-project/verl",
+    "revision": "fefb080262e1c015a0ea05f958822a6a512dc795",
+    "path": "verl/trainer/config/actor/actor.yaml",
+    "url": "https://raw.githubusercontent.com/verl-project/verl/fefb080262e1c015a0ea05f958822a6a512dc795/verl/trainer/config/actor/actor.yaml",
+    "sha256": "81c0fb3f2cfe2472ce061a0f90971305cb4b91ce1a5fbe4dcfb3bca525496930",
+    "bytes": 13070,
+    "note": "Existing cache from earlier successful fetch of this same immutable revision."
+  },
+  {
+    "label": "verl",
+    "repository": "verl-project/verl",
+    "revision": "fefb080262e1c015a0ea05f958822a6a512dc795",
+    "path": "verl/trainer/main_ppo.py",
+    "url": "https://raw.githubusercontent.com/verl-project/verl/fefb080262e1c015a0ea05f958822a6a512dc795/verl/trainer/main_ppo.py",
+    "sha256": "270ffe0d0f5ddbc4e9af8d0f6eece5d11b1a6d6d76166603b5ebac81345dd5cc",
+    "bytes": 7961
+  },
+  {
+    "label": "verl",
+    "repository": "verl-project/verl",
+    "revision": "fefb080262e1c015a0ea05f958822a6a512dc795",
+    "path": "verl/trainer/ppo/ray_trainer.py",
+    "url": "https://raw.githubusercontent.com/verl-project/verl/fefb080262e1c015a0ea05f958822a6a512dc795/verl/trainer/ppo/ray_trainer.py",
+    "sha256": "eb41f99ccc66976eab14ebe35aa1aa5b7318e02469240ef1569ac4c884c94312",
+    "bytes": 91036
+  },
+  {
+    "label": "verl",
+    "repository": "verl-project/verl",
+    "revision": "fefb080262e1c015a0ea05f958822a6a512dc795",
+    "path": "verl/trainer/constants_ppo.py",
+    "url": "https://raw.githubusercontent.com/verl-project/verl/fefb080262e1c015a0ea05f958822a6a512dc795/verl/trainer/constants_ppo.py",
+    "sha256": "a3be88dac14464216b4ec937baa776366c55d3e224b3c27957308792cb26c1e5",
+    "bytes": 6875
+  },
+  {
+    "label": "verl",
+    "repository": "verl-project/verl",
+    "revision": "fefb080262e1c015a0ea05f958822a6a512dc795",
+    "path": "verl/utils/profiler/config.py",
+    "url": "https://raw.githubusercontent.com/verl-project/verl/fefb080262e1c015a0ea05f958822a6a512dc795/verl/utils/profiler/config.py",
+    "sha256": "fac4c261eee65ad5d2924d86c5395cdf186958223862c5f0bc53dcbc2fead23e",
+    "bytes": 28462
+  },
+  {
+    "label": "verl",
+    "repository": "verl-project/verl",
+    "revision": "fefb080262e1c015a0ea05f958822a6a512dc795",
+    "path": "verl/utils/profiler/profile.py",
+    "url": "https://raw.githubusercontent.com/verl-project/verl/fefb080262e1c015a0ea05f958822a6a512dc795/verl/utils/profiler/profile.py",
+    "sha256": "ff36292dafa12bbc96adb180586845bbc3326e6894bf3a98375eab214aab218d",
+    "bytes": 20160
+  },
+  {
+    "label": "verl",
+    "repository": "verl-project/verl",
+    "revision": "fefb080262e1c015a0ea05f958822a6a512dc795",
+    "path": "verl/utils/profiler/mstx_profile.py",
+    "url": "https://raw.githubusercontent.com/verl-project/verl/fefb080262e1c015a0ea05f958822a6a512dc795/verl/utils/profiler/mstx_profile.py",
+    "sha256": "b441bbf2f0b166b0bfb5092f3e715cf366138a076f1991d4e26cc21e42044160",
+    "bytes": 10481
+  },
+  {
+    "label": "verl",
+    "repository": "verl-project/verl",
+    "revision": "fefb080262e1c015a0ea05f958822a6a512dc795",
+    "path": "verl/workers/engine/fsdp/transformer_impl.py",
+    "url": "https://raw.githubusercontent.com/verl-project/verl/fefb080262e1c015a0ea05f958822a6a512dc795/verl/workers/engine/fsdp/transformer_impl.py",
+    "sha256": "ecfbe8ac848c41998e46283513e74492e67b077df3d05caa831b75d72b3acc31",
+    "bytes": 76005
+  },
+  {
+    "label": "verl",
+    "repository": "verl-project/verl",
+    "revision": "fefb080262e1c015a0ea05f958822a6a512dc795",
+    "path": "verl/workers/engine/utils.py",
+    "url": "https://raw.githubusercontent.com/verl-project/verl/fefb080262e1c015a0ea05f958822a6a512dc795/verl/workers/engine/utils.py",
+    "sha256": "7e8d73c64446022ea58f7c50e06cae3f15c274f76e6ba2c83fdd6a9dd889c090",
+    "bytes": 11886
+  },
+  {
+    "label": "verl",
+    "repository": "verl-project/verl",
+    "revision": "fefb080262e1c015a0ea05f958822a6a512dc795",
+    "path": "verl/trainer/ppo/v1/trainer_base.py",
+    "url": "https://raw.githubusercontent.com/verl-project/verl/fefb080262e1c015a0ea05f958822a6a512dc795/verl/trainer/ppo/v1/trainer_base.py",
+    "sha256": "82db788a373d804a4be5d8a6fe276aa2fcfa005d1f8a57ae4c8285631f10948c",
+    "bytes": 93907
+  },
+  {
+    "label": "veomni",
+    "repository": "ByteDance-Seed/VeOmni",
+    "revision": "f90b3dc6fbb0ce693745223cc7a94064123dbf4d",
+    "path": "veomni/distributed/torch_parallelize.py",
+    "url": "https://raw.githubusercontent.com/ByteDance-Seed/VeOmni/f90b3dc6fbb0ce693745223cc7a94064123dbf4d/veomni/distributed/torch_parallelize.py",
+    "sha256": "ad42ce136b378de3a60ec14d9d09e624ed7a7569b2cec934b6720648422b5c6c",
+    "bytes": 22644
+  },
+  {
+    "label": "veomni",
+    "repository": "ByteDance-Seed/VeOmni",
+    "revision": "f90b3dc6fbb0ce693745223cc7a94064123dbf4d",
+    "path": "veomni/distributed/parallel_state.py",
+    "url": "https://raw.githubusercontent.com/ByteDance-Seed/VeOmni/f90b3dc6fbb0ce693745223cc7a94064123dbf4d/veomni/distributed/parallel_state.py",
+    "sha256": "43024419fe9cd33f5932615ce8261b746d5d68681cbd6edee73c266f2672ff2f",
+    "bytes": 21155
+  },
+  {
+    "label": "veomni",
+    "repository": "ByteDance-Seed/VeOmni",
+    "revision": "f90b3dc6fbb0ce693745223cc7a94064123dbf4d",
+    "path": "veomni/arguments/arguments_types.py",
+    "url": "https://raw.githubusercontent.com/ByteDance-Seed/VeOmni/f90b3dc6fbb0ce693745223cc7a94064123dbf4d/veomni/arguments/arguments_types.py",
+    "sha256": "637e5349bcf8947026b723eb9736d86e14a249343876ab413d323bf1dd947157",
+    "bytes": 48484
+  },
+  {
+    "label": "veomni",
+    "repository": "ByteDance-Seed/VeOmni",
+    "revision": "f90b3dc6fbb0ce693745223cc7a94064123dbf4d",
+    "path": "veomni/arguments/__init__.py",
+    "url": "https://raw.githubusercontent.com/ByteDance-Seed/VeOmni/f90b3dc6fbb0ce693745223cc7a94064123dbf4d/veomni/arguments/__init__.py",
+    "sha256": "cf5b37948a899a92e72d1ccd425996bba323496aa7547fb475fdf7e097a91a56",
+    "bytes": 1027
+  },
+  {
+    "label": "veomni",
+    "repository": "ByteDance-Seed/VeOmni",
+    "revision": "f90b3dc6fbb0ce693745223cc7a94064123dbf4d",
+    "path": "veomni/__init__.py",
+    "url": "https://raw.githubusercontent.com/ByteDance-Seed/VeOmni/f90b3dc6fbb0ce693745223cc7a94064123dbf4d/veomni/__init__.py",
+    "sha256": "fd965658a108911ad73893510106be94e24f7ace9b1e101ecf540cd4cd8d42b5",
+    "bytes": 919
+  },
+  {
+    "label": "veomni",
+    "repository": "ByteDance-Seed/VeOmni",
+    "revision": "f90b3dc6fbb0ce693745223cc7a94064123dbf4d",
+    "path": "veomni/models/transformers/qwen3_omni_moe/__init__.py",
+    "url": "https://raw.githubusercontent.com/ByteDance-Seed/VeOmni/f90b3dc6fbb0ce693745223cc7a94064123dbf4d/veomni/models/transformers/qwen3_omni_moe/__init__.py",
+    "sha256": "3b24f437525dc71b1316222222381b0e22824422cf5a2bf82b21b8c6ccbc1355",
+    "bytes": 3694
+  },
+  {
+    "label": "veomni",
+    "repository": "ByteDance-Seed/VeOmni",
+    "revision": "f90b3dc6fbb0ce693745223cc7a94064123dbf4d",
+    "path": "veomni/models/transformers/qwen3_omni_moe/generated/patched_modeling_qwen3_omni_moe_gpu.py",
+    "url": "https://raw.githubusercontent.com/ByteDance-Seed/VeOmni/f90b3dc6fbb0ce693745223cc7a94064123dbf4d/veomni/models/transformers/qwen3_omni_moe/generated/patched_modeling_qwen3_omni_moe_gpu.py",
+    "sha256": "c789537b65a081f7623aa109565e5e606fa3542eb3dac58f0226e08ce31fa0cb",
+    "bytes": 152269
+  },
+  {
+    "label": "veomni",
+    "repository": "ByteDance-Seed/VeOmni",
+    "revision": "f90b3dc6fbb0ce693745223cc7a94064123dbf4d",
+    "path": "veomni/ops/platform/npu/hccl_premul_sum.py",
+    "url": "https://raw.githubusercontent.com/ByteDance-Seed/VeOmni/f90b3dc6fbb0ce693745223cc7a94064123dbf4d/veomni/ops/platform/npu/hccl_premul_sum.py",
+    "sha256": "934834eac8a4efc75413f87388e64d79044bca1454b0b883a423ef84d0803343",
+    "bytes": 1497
+  },
+  {
+    "label": "veomni",
+    "repository": "ByteDance-Seed/VeOmni",
+    "revision": "f90b3dc6fbb0ce693745223cc7a94064123dbf4d",
+    "path": "veomni/optim/optimizer.py",
+    "url": "https://raw.githubusercontent.com/ByteDance-Seed/VeOmni/f90b3dc6fbb0ce693745223cc7a94064123dbf4d/veomni/optim/optimizer.py",
+    "sha256": "0ecea9ec6bcc1be71ba0e954b52daac0864edad35d59c17b48e2906a7cd57f7e",
+    "bytes": 26332
+  },
+  {
+    "label": "torch",
+    "repository": "pytorch/pytorch",
+    "revision": "449b1768410104d3ed79d3bcfe4ba1d65c7f22c0",
+    "path": "torch/distributed/fsdp/_fully_shard/_fsdp_param.py",
+    "url": "https://raw.githubusercontent.com/pytorch/pytorch/449b1768410104d3ed79d3bcfe4ba1d65c7f22c0/torch/distributed/fsdp/_fully_shard/_fsdp_param.py",
+    "sha256": "27160f15d74b42d4f97e8356f644a7ea74a146b43baffa4af669a5b5587f3a91",
+    "bytes": 45089
+  },
+  {
+    "label": "torch",
+    "repository": "pytorch/pytorch",
+    "revision": "449b1768410104d3ed79d3bcfe4ba1d65c7f22c0",
+    "path": "torch/distributed/fsdp/_fully_shard/_fsdp_param_group.py",
+    "url": "https://raw.githubusercontent.com/pytorch/pytorch/449b1768410104d3ed79d3bcfe4ba1d65c7f22c0/torch/distributed/fsdp/_fully_shard/_fsdp_param_group.py",
+    "sha256": "0f81daf147e30914f9f96bd5e654c3bc3df7a5f4a0db37819ed76d3f00858cb6",
+    "bytes": 40430
+  },
+  {
+    "label": "torch",
+    "repository": "pytorch/pytorch",
+    "revision": "449b1768410104d3ed79d3bcfe4ba1d65c7f22c0",
+    "path": "torch/distributed/fsdp/_fully_shard/_fsdp_collectives.py",
+    "url": "https://raw.githubusercontent.com/pytorch/pytorch/449b1768410104d3ed79d3bcfe4ba1d65c7f22c0/torch/distributed/fsdp/_fully_shard/_fsdp_collectives.py",
+    "sha256": "f8527a45d7d8ae029e8b2ce78b9fd6fc909b95e4b3cf1be7cfa9ba3da722be31",
+    "bytes": 29826
+  },
+  {
+    "label": "torch",
+    "repository": "pytorch/pytorch",
+    "revision": "449b1768410104d3ed79d3bcfe4ba1d65c7f22c0",
+    "path": "torch/distributed/fsdp/_fully_shard/_fsdp_state.py",
+    "url": "https://raw.githubusercontent.com/pytorch/pytorch/449b1768410104d3ed79d3bcfe4ba1d65c7f22c0/torch/distributed/fsdp/_fully_shard/_fsdp_state.py",
+    "sha256": "cf7a672578f8480626a6ef0e4476b81b8411e37f0065b4fbc205af4b2c62b8af",
+    "bytes": 18049
+  },
+  {
+    "label": "torch",
+    "repository": "pytorch/pytorch",
+    "revision": "449b1768410104d3ed79d3bcfe4ba1d65c7f22c0",
+    "path": "torch/distributed/fsdp/_fully_shard/_fsdp_api.py",
+    "url": "https://raw.githubusercontent.com/pytorch/pytorch/449b1768410104d3ed79d3bcfe4ba1d65c7f22c0/torch/distributed/fsdp/_fully_shard/_fsdp_api.py",
+    "sha256": "d335cc81c6eb1c9497a30a3028d8044f7eaf13bc2d52a17e242f31bd9ad59cf9",
+    "bytes": 5442
+  },
+  {
+    "label": "npu",
+    "repository": "Ascend/pytorch",
+    "revision": "85f239d69ebb205ac18d968ffd03fa1d7974dab3",
+    "path": "torch_npu/csrc/distributed/ProcessGroupHCCL.cpp",
+    "url": "https://raw.githubusercontent.com/Ascend/pytorch/85f239d69ebb205ac18d968ffd03fa1d7974dab3/torch_npu/csrc/distributed/ProcessGroupHCCL.cpp",
+    "sha256": "4426ddf254dc98b2df2e47e2bee5f4e201ab6f64d13b40c52784817895020d23",
+    "bytes": 367445
+  },
+  {
+    "label": "npu",
+    "repository": "Ascend/pytorch",
+    "revision": "85f239d69ebb205ac18d968ffd03fa1d7974dab3",
+    "path": "torch_npu/csrc/core/npu/NPUCachingAllocator.cpp",
+    "url": "https://raw.githubusercontent.com/Ascend/pytorch/85f239d69ebb205ac18d968ffd03fa1d7974dab3/torch_npu/csrc/core/npu/NPUCachingAllocator.cpp",
+    "sha256": "3f82ce7e6fbfed74fb054956f4213664ce10d48af51e79b3ba3192a920c7e6c8",
+    "bytes": 175166
+  },
+  {
+    "label": "npu",
+    "repository": "Ascend/pytorch",
+    "revision": "85f239d69ebb205ac18d968ffd03fa1d7974dab3",
+    "path": "torch_npu/distributed/fsdp/_add_fsdp_patch.py",
+    "url": "https://raw.githubusercontent.com/Ascend/pytorch/85f239d69ebb205ac18d968ffd03fa1d7974dab3/torch_npu/distributed/fsdp/_add_fsdp_patch.py",
+    "sha256": "afd6c1f10cb9c328352c1542235a06158aa7e632613ce4c7b9e87175ca0b6550",
+    "bytes": 13618
+  },
+  {
+    "label": "npu",
+    "repository": "Ascend/pytorch",
+    "revision": "85f239d69ebb205ac18d968ffd03fa1d7974dab3",
+    "path": "torch_npu/distributed/fsdp/__init__.py",
+    "url": "https://raw.githubusercontent.com/Ascend/pytorch/85f239d69ebb205ac18d968ffd03fa1d7974dab3/torch_npu/distributed/fsdp/__init__.py",
+    "sha256": "52243a38b7a07d6df54628f8d936ce22d3ae22155331b92e5bc12f568e815545",
+    "bytes": 103
+  },
+  {
+    "label": "verl",
+    "repository": "verl-project/verl",
+    "revision": "fefb080262e1c015a0ea05f958822a6a512dc795",
+    "path": "verl/trainer/config/rollout/rollout.yaml",
+    "url": "https://raw.githubusercontent.com/verl-project/verl/fefb080262e1c015a0ea05f958822a6a512dc795/verl/trainer/config/rollout/rollout.yaml",
+    "sha256": "6bfa61e1128daf5bdf7ae87ac020819635fa1cd91e3dc03bbaa83519f811297b",
+    "bytes": 19655
+  }
+]
