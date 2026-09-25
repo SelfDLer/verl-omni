@@ -2,6 +2,8 @@
 
 本目录用于 `d71ae4c11935f8dd073644b05943a84ecd1a79b3` 的首轮审计。结论见 [audit.md](audit.md)，证据进展见 [findings.md](findings.md)。Windows 没有 NPU；这里的测试不是服务器训练验证。
 
+2026-09-26 的最新交付是 [post6 静态诊断](static_diagnosis_post6.md)：对照当前 VeOmni / FSDP2，定位跨流延迟复用条件、分配重试及主动物理回收入口，逐项解释四个新现象。新增固定源码索引见 [static_source_manifest.json](static_source_manifest.json)。本轮不要求执行下面的采集工具。
+
 ## 先做这两步，不重跑训练
 
 运行位置：**Linux 服务器当前仓库根目录、训练使用的 Conda 环境，沿用已加载的 CANN/ATB**。`/absolute/path/to/ONE_RUN` 替换为一个已有 profiling run 的真实目录；可以是包含 16 rank 的目录，不要指向全部历史 run 的总目录。每次分析使用新的结果目录。

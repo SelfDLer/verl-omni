@@ -1,5 +1,7 @@
 # 当前快照审计：通信偏斜与 Active Memory
 
+后续更新：2026-09-26 的 [post6 静态诊断](static_diagnosis_post6.md) 使用服务器确认的 `38e483ee` NPU 源码，补充 FSDP2 对照、物理回收入口，并纠正 root reshard 的默认值适用范围。以下保留首轮审计时的证据状态，不能把“尚未收到环境报告”等历史描述视为最新状态。
+
 ## 证据范围
 
 审计日期 2026-09-25。仓库 HEAD `d71ae4c11935f8dd073644b05943a84ecd1a79b3`，分支 `qwen3-omni-veomni`。已读根目录 `AGENTS.md`；相关路径未发现更深层 AGENTS。开始时已有：

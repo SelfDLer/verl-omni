@@ -1,0 +1,173 @@
+[
+  {
+    "label": "npu_post6",
+    "repository": "Ascend/pytorch",
+    "revision": "38e483ee79ec8a3286517808740a811c0f0ae66c",
+    "path": "torch_npu/csrc/core/npu/NPUCachingAllocator.cpp",
+    "url": "https://raw.githubusercontent.com/Ascend/pytorch/38e483ee79ec8a3286517808740a811c0f0ae66c/torch_npu/csrc/core/npu/NPUCachingAllocator.cpp",
+    "sha256": "b1a3ee512a5d70755529215a02bebf83b818ff90b1ec8f4501f29e416e6fcb60",
+    "bytes": 167360
+  },
+  {
+    "label": "npu_post6",
+    "repository": "Ascend/pytorch",
+    "revision": "38e483ee79ec8a3286517808740a811c0f0ae66c",
+    "path": "torch_npu/csrc/distributed/ProcessGroupHCCL.cpp",
+    "url": "https://raw.githubusercontent.com/Ascend/pytorch/38e483ee79ec8a3286517808740a811c0f0ae66c/torch_npu/csrc/distributed/ProcessGroupHCCL.cpp",
+    "sha256": "05244bdb68d60ee2fb5f335007248aadf5eed7a9de2b39997f16dc8a8182f3f9",
+    "bytes": 340234
+  },
+  {
+    "label": "npu_post6",
+    "repository": "Ascend/pytorch",
+    "revision": "38e483ee79ec8a3286517808740a811c0f0ae66c",
+    "path": "torch_npu/distributed/fsdp/_add_fsdp_patch.py",
+    "url": "https://raw.githubusercontent.com/Ascend/pytorch/38e483ee79ec8a3286517808740a811c0f0ae66c/torch_npu/distributed/fsdp/_add_fsdp_patch.py",
+    "sha256": "afd6c1f10cb9c328352c1542235a06158aa7e632613ce4c7b9e87175ca0b6550",
+    "bytes": 13618
+  },
+  {
+    "label": "npu_post6",
+    "repository": "Ascend/pytorch",
+    "revision": "38e483ee79ec8a3286517808740a811c0f0ae66c",
+    "path": "torch_npu/distributed/fsdp/__init__.py",
+    "url": "https://raw.githubusercontent.com/Ascend/pytorch/38e483ee79ec8a3286517808740a811c0f0ae66c/torch_npu/distributed/fsdp/__init__.py",
+    "sha256": "52243a38b7a07d6df54628f8d936ce22d3ae22155331b92e5bc12f568e815545",
+    "bytes": 103
+  },
+  {
+    "label": "npu_post6",
+    "repository": "Ascend/pytorch",
+    "revision": "38e483ee79ec8a3286517808740a811c0f0ae66c",
+    "path": "torch_npu/npu/memory.py",
+    "url": "https://raw.githubusercontent.com/Ascend/pytorch/38e483ee79ec8a3286517808740a811c0f0ae66c/torch_npu/npu/memory.py",
+    "sha256": "b489a7dc22b77d5f50b3329801fe64cb4c7f908cf2abaea75c0efbd7f4c436c1",
+    "bytes": 39547
+  },
+  {
+    "label": "npu_post6",
+    "repository": "Ascend/pytorch",
+    "revision": "38e483ee79ec8a3286517808740a811c0f0ae66c",
+    "path": "torch_npu/csrc/core/npu/NPUWorkspaceAllocator.cpp",
+    "url": "https://raw.githubusercontent.com/Ascend/pytorch/38e483ee79ec8a3286517808740a811c0f0ae66c/torch_npu/csrc/core/npu/NPUWorkspaceAllocator.cpp",
+    "sha256": "2b148014de2fba63d7274bc6dc7f965b6d2534de4619a776eedede49d8d6c2fa",
+    "bytes": 23841
+  },
+  {
+    "label": "verl",
+    "repository": "verl-project/verl",
+    "revision": "fefb080262e1c015a0ea05f958822a6a512dc795",
+    "path": "verl/utils/fsdp_utils.py",
+    "url": "https://raw.githubusercontent.com/verl-project/verl/fefb080262e1c015a0ea05f958822a6a512dc795/verl/utils/fsdp_utils.py",
+    "sha256": "7cb46c36f46269ae89fd8be861ab37fdb05eaa3742fd96df74145989dfe9cd78",
+    "bytes": 52650
+  },
+  {
+    "label": "verl",
+    "repository": "verl-project/verl",
+    "revision": "fefb080262e1c015a0ea05f958822a6a512dc795",
+    "path": "verl/trainer/config/engine/fsdp.yaml",
+    "url": "https://raw.githubusercontent.com/verl-project/verl/fefb080262e1c015a0ea05f958822a6a512dc795/verl/trainer/config/engine/fsdp.yaml",
+    "sha256": "abbc1a835af652b56642d815f43b03ac2787d6e7b8242c3e8ce60538ca1b9e45",
+    "bytes": 3680
+  },
+  {
+    "label": "verl",
+    "repository": "verl-project/verl",
+    "revision": "fefb080262e1c015a0ea05f958822a6a512dc795",
+    "path": "verl/workers/engine/fsdp/utils.py",
+    "url": "https://raw.githubusercontent.com/verl-project/verl/fefb080262e1c015a0ea05f958822a6a512dc795/verl/workers/engine/fsdp/utils.py",
+    "sha256": "d4d836445d9160834a3bbc91cbf874f3db816c0b86e4fc63352d0e1b0c91a5b7",
+    "bytes": 4945
+  },
+  {
+    "label": "npu_post6",
+    "repository": "Ascend/pytorch",
+    "revision": "38e483ee79ec8a3286517808740a811c0f0ae66c",
+    "path": "torch_npu/csrc/core/npu/NPUCachingAllocator.h",
+    "url": "https://raw.githubusercontent.com/Ascend/pytorch/38e483ee79ec8a3286517808740a811c0f0ae66c/torch_npu/csrc/core/npu/NPUCachingAllocator.h",
+    "sha256": "d16adcbbee0d6a071632358de7e00b4c357de0bfd326c4d3e42d712f73260fc3",
+    "bytes": 19457
+  },
+  {
+    "label": "npu_post6",
+    "repository": "Ascend/pytorch",
+    "revision": "38e483ee79ec8a3286517808740a811c0f0ae66c",
+    "path": "torch_npu/csrc/core/npu/register/OptionsManager.cpp",
+    "url": "https://raw.githubusercontent.com/Ascend/pytorch/38e483ee79ec8a3286517808740a811c0f0ae66c/torch_npu/csrc/core/npu/register/OptionsManager.cpp",
+    "sha256": "678e808d45e29da1762164ae4c530b45d23d184b849b2870cbe979cface5da70",
+    "bytes": 26921
+  },
+  {
+    "label": "npu_post6",
+    "repository": "Ascend/pytorch",
+    "revision": "38e483ee79ec8a3286517808740a811c0f0ae66c",
+    "path": "torch_npu/csrc/npu/Module.cpp",
+    "url": "https://raw.githubusercontent.com/Ascend/pytorch/38e483ee79ec8a3286517808740a811c0f0ae66c/torch_npu/csrc/npu/Module.cpp",
+    "sha256": "6fb589c802d65447dd432623d0a07829a363148ed7623a74112f1da387d68537",
+    "bytes": 100969
+  },
+  {
+    "label": "verl",
+    "repository": "verl-project/verl",
+    "revision": "fefb080262e1c015a0ea05f958822a6a512dc795",
+    "path": "verl/utils/memory_utils.py",
+    "url": "https://raw.githubusercontent.com/verl-project/verl/fefb080262e1c015a0ea05f958822a6a512dc795/verl/utils/memory_utils.py",
+    "sha256": "2c356ff43c37d18f29dd0713cb60cb080209fff2e964f993b8d27f176669c111",
+    "bytes": 11270
+  },
+  {
+    "label": "veomni",
+    "repository": "ByteDance-Seed/VeOmni",
+    "revision": "f90b3dc6fbb0ce693745223cc7a94064123dbf4d",
+    "path": "veomni/distributed/offloading.py",
+    "url": "https://raw.githubusercontent.com/ByteDance-Seed/VeOmni/f90b3dc6fbb0ce693745223cc7a94064123dbf4d/veomni/distributed/offloading.py",
+    "sha256": "4c9f66ba8acf891a8811a20a4938460f691800a9e2cd63e3ac19172f4ec28a40",
+    "bytes": 8144
+  },
+  {
+    "label": "npu_post6",
+    "repository": "Ascend/pytorch",
+    "revision": "38e483ee79ec8a3286517808740a811c0f0ae66c",
+    "path": "torch_npu/csrc/core/npu/NPUAllocatorConfig.cpp",
+    "url": "https://raw.githubusercontent.com/Ascend/pytorch/38e483ee79ec8a3286517808740a811c0f0ae66c/torch_npu/csrc/core/npu/NPUAllocatorConfig.cpp",
+    "sha256": "1ecd990e62bf84614d3b98aebe088ab74169b60741b0c67dcbf4a48866b68c22",
+    "bytes": 20078
+  },
+  {
+    "label": "npu_post6",
+    "repository": "Ascend/pytorch",
+    "revision": "38e483ee79ec8a3286517808740a811c0f0ae66c",
+    "path": "torch_npu/csrc/core/npu/NPUAllocatorConfig.h",
+    "url": "https://raw.githubusercontent.com/Ascend/pytorch/38e483ee79ec8a3286517808740a811c0f0ae66c/torch_npu/csrc/core/npu/NPUAllocatorConfig.h",
+    "sha256": "b3cc7b802d07e1d1fa8cc5906e4d00f168da2cbd10aeecff9348d77f4523329e",
+    "bytes": 5888
+  },
+  {
+    "label": "torch",
+    "repository": "pytorch/pytorch",
+    "revision": "449b1768410104d3ed79d3bcfe4ba1d65c7f22c0",
+    "path": "torch/distributed/fsdp/_fully_shard/_fully_shard.py",
+    "url": "https://raw.githubusercontent.com/pytorch/pytorch/449b1768410104d3ed79d3bcfe4ba1d65c7f22c0/torch/distributed/fsdp/_fully_shard/_fully_shard.py",
+    "sha256": "3e1299e618dcaa589c3a70c8df51d26fc416dd34af1d37c2b8a5d30d0aa9d7bf",
+    "bytes": 33135
+  },
+  {
+    "label": "torch",
+    "repository": "pytorch/pytorch",
+    "revision": "449b1768410104d3ed79d3bcfe4ba1d65c7f22c0",
+    "path": "torch/distributed/distributed_c10d.py",
+    "url": "https://raw.githubusercontent.com/pytorch/pytorch/449b1768410104d3ed79d3bcfe4ba1d65c7f22c0/torch/distributed/distributed_c10d.py",
+    "sha256": "31155344233ae77360a630bbeacf1b43cfa18f1923cf2103cd5b3142db39ec5c",
+    "bytes": 247572
+  },
+  {
+    "label": "verl",
+    "repository": "verl-project/verl",
+    "revision": "fefb080262e1c015a0ea05f958822a6a512dc795",
+    "path": "verl/utils/device.py",
+    "url": "https://raw.githubusercontent.com/verl-project/verl/fefb080262e1c015a0ea05f958822a6a512dc795/verl/utils/device.py",
+    "sha256": "9da5979922083fc88ecb7d2271ef9573f7994dfa7c42e51ff72df40e66447ec2",
+    "bytes": 12316
+  }
+]
