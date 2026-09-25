@@ -6,6 +6,8 @@
 
 后续分支核对见 [enable_fsdp_offload=false 分析](offload_false_analysis.md)：区分消失的 native D2H、仍成立的 RS 输入延迟复用，以及恢复的阶段性手动 offload / empty_cache。
 
+默认关闭的 RS 提交限流候选、事件/引用安全性、固定输入 AB 与汇总指标见 [候选补丁说明](rs_limiter_candidate.md)。NPU 对照由用户运行；该候选尚无设备验证结论。
+
 ## 先做这两步，不重跑训练
 
 运行位置：**Linux 服务器当前仓库根目录、训练使用的 Conda 环境，沿用已加载的 CANN/ATB**。`/absolute/path/to/ONE_RUN` 替换为一个已有 profiling run 的真实目录；可以是包含 16 rank 的目录，不要指向全部历史 run 的总目录。每次分析使用新的结果目录。

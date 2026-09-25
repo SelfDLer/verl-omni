@@ -129,6 +129,10 @@ class OmniVeOmniEngine(VeOmniEngineWithLMHead):
             self.model_config.enable_gradient_checkpointing,
             self.engine_config.activation_gpu_limit,
         )
+        if os.environ.get("VEOMNI_LIMIT_RS_INFLIGHT", "0") != "0":
+            from .rs_limiter import install as install_rs_limiter
+
+            install_rs_limiter(self)
         if os.environ.get("VEOMNI_MEMORY_PROBE") == "1":
             from codex_test.veomni_memory.worker_probe import install
 

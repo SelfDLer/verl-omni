@@ -901,6 +901,10 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             data,
             use_no_sync_for_gradient_accumulation=self.config.actor.get("use_no_sync_for_gradient_accumulation", False),
         )
+        if os.environ.get("VEOMNI_RS_AB_MODE"):
+            from codex_test.veomni_memory.rs_ab import run_update
+
+            return run_update(self.actor, data)
         output = self.actor.train_mini_batch(data=data)
         return output.cpu() if output is not None else None
 
