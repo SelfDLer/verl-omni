@@ -1,6 +1,6 @@
 # Profiling FlowGRPO / diffusion training in VeRL-Omni
 
-Last updated: 09/22/2026.
+Last updated: 09/29/2026.
 
 VeRL-Omni reuses the profiler subsystem from upstream
 [verl](https://github.com/verl-project/verl) (`verl.utils.profiler`) and exposes
@@ -113,6 +113,8 @@ already at ...".
 
 The following GPU recipes add CLI overrides on top of
 `examples/flowgrpo_trainer/qwen_image/run_qwen_image_ocr_lora.sh`.
+The PyTorch actor and rollout options also apply to diffusion V1 GPU launchers
+in `sync` and `separate_async` modes.
 
 ### 1. PyTorch profiler — end-to-end
 
@@ -194,9 +196,11 @@ When controller `capture-range-end` is null, it is resolved to the number of
 discrete profiled steps or contiguous step groups before Ray starts the
 TaskRunner.
 
-`verl_omni.trainer.main_diffusion_v1` also wires step-based controller and
-worker start/stop calls. GPU/Nsight collection on V1 still needs hardware
-validation; the V1 adaptation currently focuses on NPU profiling.
+Diffusion V1 profiling has been validated with the NPU and PyTorch
+(`tool=torch`) backends. Nsight (`tool=nsys`) is unverified for V1. V1 does
+not implement controller capture start/stop calls, so controller
+`capture-range=cudaProfilerApi` is rejected when Nsight profiling steps are
+configured. This restriction does not apply to worker-side capture settings.
 
 `*.nsys-rep` files are written by Ray under
 `/tmp/ray/session_latest/logs/nsight/` on each node (this path is fixed by
@@ -293,9 +297,15 @@ actor_rollout_ref.rollout.profiler.tool_config.torch.contents=[cpu,cuda] \
 actor_rollout_ref.rollout.profiler.tool_config.torch.discrete=True
 ```
 
-`ranks` selects rollout replicas (one replica per
-`rollout.agent.num_workers`). Each profiled replica writes its trace to
+`ranks` selects global ranks within the rollout workers; the owning replicas
+collect traces. Each profiled replica writes its trace to
 `{save_path}/agent_loop_rollout_replica_{rank}`, next to the actor traces.
+For diffusion V1 rollout collection, keep
+`global_profiler.profile_continuous_steps=False`. V1 rejects continuous-step profiling
+when rollout profiling is enabled and profiling steps are configured;
+actor-only continuous profiling remains allowed. In `separate_async`, select ranks
+belonging to the standalone rollout replicas according to the actual worker
+layout, rather than using replica indices or physical device IDs.
 Combine with recipe 1 to capture the actor train phase and the rollout in the
 same step.
 
@@ -389,16 +399,20 @@ output is saved under `./outputs/profile`, with rollout output in a
 select the global steps and explicitly enable each role to collect traces.
 These fields already exist, so use plain `key=value` overrides without a `+` prefix.
 
-Keep `rollout.profiler.tool_config.npu.discrete=True` for engine-side collection.
-The example also uses actor `discrete=True` to collect individual training stages.
-Use this combination when collecting actor and rollout together.
-For diffusion V1 rollout collection in either mode, keep
-`global_profiler.profile_continuous_steps=False`. Following upstream V1, sync
-stops rollout profiling after replicas sleep; separate_async stops it at step end. Actor-only collection can
-use either `discrete` value where supported by the backend.
+Engine-side NPU rollout profiling requires
+`rollout.profiler.tool_config.npu.discrete=True` regardless of the trainer.
+The example also sets actor `discrete=True` to collect individual training
+stages. Actor-only collection can use either `discrete` value where supported
+by the backend.
 
-For diffusion V1 `separate_async`, set `all_ranks=False` and select actor and
-standalone rollout ranks on disjoint physical devices. This also applies with
+For diffusion V1 (`sync` and `separate_async`), rollout profiling additionally
+requires `global_profiler.profile_continuous_steps=False`. The V1 entrypoint
+rejects continuous-step profiling when rollout profiling is enabled and
+profiling steps are configured.
+
+Concurrent NPU collectors must use disjoint physical devices. For diffusion
+V1 `separate_async`, set `all_ranks=False` and select actor and standalone
+rollout ranks accordingly. This also applies with
 `trainer.v1.separate_async.hybrid_rollout.enable_switch=True`; lending actor
 devices to hybrid rollout does not serialize collectors on the same device.
 When switching is disabled, V1 does not profile the unused hybrid manager.
@@ -407,11 +421,12 @@ Set either role's `profiler.enable=False` to
 collect only the other role. Reward-model profiling is configured separately
 under `reward.reward_model.rollout.profiler` (recipe 6).
 
-For diffusion V1, `actor_rollout_ref.rollout.profiler.ranks` contains global
+`actor_rollout_ref.rollout.profiler.ranks` contains global
 ranks within the rollout workers, not replica IDs or physical device IDs.
 For replica world size `W = TP * DP * PP`, selecting rank `r` selects replica
 `r // W`; collection may
-include all devices of that replica. With `H` hybrid replicas preceding the
+include all devices of that replica. In diffusion V1 `separate_async`, with
+`H` hybrid replicas preceding the
 standalone replicas, standalone ranks begin at `H * W`. For example, eight
 hybrid devices with `TP=2, DP=PP=1` occupy ranks 0–7: actor rank `[0]` and
 standalone rollout rank `[8]` select disjoint devices, provided the resource
@@ -420,9 +435,9 @@ rank numbers across roles alone do not prove physical-device overlap.
 
 `all_ranks=true` remains usable when the participating collectors are physically
 disjoint. Manual rank selection cannot make overlapping NPU collectors safe.
-In diffusion V1 async mode, profile steps denote trainer time windows, not the
-policy version of samples already in the replay buffer. Hardware trace validation is still needed
-for the chosen engine and device layout.
+In asynchronous training with a replay buffer, profile steps denote trainer
+time windows, not the policy version of buffered samples. Check trace contents
+against the selected ranks and actual engine placement.
 
 #### Collection options
 

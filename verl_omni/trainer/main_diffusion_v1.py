@@ -40,6 +40,28 @@ def run_diffusion_v1(config, task_runner_class=None) -> None:
                 settings, model paths, and training hyperparameters.
         task_runner_class: For recipe to change TaskRunner.
     """
+    # Reject unsupported profiling combinations before starting Ray or workers.
+    if OmegaConf.select(config, "global_profiler.steps"):
+        if (
+            OmegaConf.select(config, "global_profiler.tool") == "nsys"
+            and OmegaConf.select(
+                config, "global_profiler.global_tool_config.nsys.controller_nsight_options.capture-range"
+            )
+            == "cudaProfilerApi"
+        ):
+            raise ValueError(
+                "Diffusion V1 does not support controller-side Nsight capture-range=cudaProfilerApi. "
+                "Remove global_profiler.global_tool_config.nsys.controller_nsight_options.capture-range; "
+                "worker-side capture-range settings are unaffected."
+            )
+        if OmegaConf.select(config, "actor_rollout_ref.rollout.profiler.enable", default=False) and OmegaConf.select(
+            config, "global_profiler.profile_continuous_steps", default=False
+        ):
+            raise ValueError(
+                "Diffusion V1 rollout profiling requires global_profiler.profile_continuous_steps=False. "
+                "Disable actor_rollout_ref.rollout.profiler.enable for actor-only continuous profiling."
+            )
+
     # TransferQueue is required for v1; force-enable it before ray.init() so
     # TRANSFER_QUEUE_ENABLE is exported to every worker through the runtime env.
     config.transfer_queue.enable = True
