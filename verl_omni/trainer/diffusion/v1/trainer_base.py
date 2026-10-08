@@ -56,7 +56,6 @@ from verl.utils.metric import reduce_metrics
 from verl.utils.py_functional import rename_dict
 from verl.utils.skip import SkipManager
 from verl.utils.tracking import Tracking, ValidationGenerationsLogger
-from verl.workers.rollout.llm_server import LLMServerManager
 
 from verl_omni.pipelines.rollout_media import (
     resolve_batch_media_kind,
@@ -73,6 +72,7 @@ from verl_omni.trainer.diffusion.diffusion_metric_utils import (
 )
 from verl_omni.trainer.diffusion.diffusion_trainer_utils import (
     old_policy_decay,
+    track_nonfinite_grad_streak,
     validate_distillation_config,
     worker_group_port_ranges,
 )
@@ -106,6 +106,7 @@ from verl_omni.workers.config.reward import (
     streaming_reward_enabled,
 )
 from verl_omni.workers.engine_workers import ActorRolloutRefWorker, resolve_teacher_infer_micro_batch_size
+from verl_omni.workers.rollout.replica import DiffusionLLMServerManager as LLMServerManager
 from verl_omni.workers.utils.padding import embeds_padding_2_no_padding
 
 logger = logging.getLogger(__name__)
@@ -209,6 +210,7 @@ class PolicyGradientDiffusionTrainerV1(ABC):
         self.global_steps = 0
         # Local update index within the parameter-sync cycle.
         self.local_trigger_step = 0
+        self._nonfinite_grad_streak = 0
 
     def _build_replay_buffer(self) -> ReplayBuffer:
         sampler_config = self.config.trainer.v1.sampler
@@ -1818,9 +1820,11 @@ class PolicyGradientDiffusionTrainerV1(ABC):
             for key in keys:
                 reward_extra_infos_dict[key] = [info.get(key) for info in infos]
         metrics.update(compute_reward_extra_metrics_diffusion(reward_extra_infos_dict))
+        gradient_norm = metrics.get("actor/grad_norm", None)
         if "advantages" in data.batch:
-            gradient_norm = metrics.get("actor/grad_norm", None)
             metrics.update(compute_variance_proxy_metrics(batch=data, gradient_norm=gradient_norm))
+        self._nonfinite_grad_streak = track_nonfinite_grad_streak(self._nonfinite_grad_streak, gradient_norm)
+        metrics["train/nonfinite_grad_steps"] = self._nonfinite_grad_streak
 
         # off-policy staleness metrics (model-version units)
         non_padding = np.array([not tag.get("is_padding", False) for tag in batch_meta.tags], dtype=bool)
