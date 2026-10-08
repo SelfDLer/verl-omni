@@ -1,6 +1,6 @@
 # Named Reward Models
 
-Last updated: 09/22/2026
+Last updated: 10/06/2026
 
 This guide describes how to configure and extend named model-backed rewards
 under `reward.models` in `verl-omni`. For the general Reward Loop interface and
@@ -127,6 +127,31 @@ async def compute_score(
 `reward.reward_model.rollout` remains the common engine default. Values under a
 named model's `rollout` override those defaults. A named model's `model_path`
 also overrides the common `reward_model.model_path` fallback.
+
+## SD3.5 V1 OCR recipe
+
+The [SD3.5 V1 synchronous recipe](../../examples/flowgrpo_trainer/sd35/run_sd35_medium_ocr_lora_v1.sh)
+uses `reward.models.ocr` with the engine backend and
+`MultiVisualRewardManager`. It keeps the existing
+`Qwen/Qwen2.5-VL-3B-Instruct` checkpoint and `compute_score_ocr` scorer, with
+weight `1.0` and `required=true`.
+
+Prepare `data/ocr/sd3/train.parquet` and `data/ocr/sd3/test.parquet` under
+`OCR_WORKSPACE`, then run from the repository root:
+
+```bash
+OCR_WORKSPACE=/path/to/workspace bash examples/flowgrpo_trainer/sd35/run_sd35_medium_ocr_lora_v1.sh \
+  'trainer.logger=[console]'
+```
+
+Caller overrides remain last. This recipe opts into
+`reward.reward_functions.ocr.use_rollout_sampling_params=true` to forward the
+response length and optional deterministic seed from the model's rollout
+settings, falling back to `reward.reward_model.rollout`. Explicit scorer
+`sampling_params` take precedence. Existing named rewards without this opt-in
+keep their scorer defaults; OCR still defaults to 4096 output tokens and honors
+`GENRM_OCR_SEED`. The opt-in preserves the legacy visual manager's seed behavior:
+an environment seed is excluded unless rollout determinism supplies a seed.
 
 ## Model-to-reward binding
 
