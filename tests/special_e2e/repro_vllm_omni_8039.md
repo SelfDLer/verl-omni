@@ -1,5 +1,8 @@
 # vLLM-Omni #8039: 单机双节点前端复现探针
 
+更新：该探针未能复现用户遇到的问题。它省略完整引擎，不能替代原始拓扑的复现。
+已有两台 A3 时请使用 [真实双机 NExT-QA validation 步骤](repro_8039_two_hosts.md)。
+
 对应 [issue #8039](https://github.com/vllm-project/vllm-omni/issues/8039)。
 目标是快速检测不同请求的视频是否在前端处理或 P0/P1 缓存传输中混淆。
 这是一个缩小范围的复现探针；尚未在目标 Linux 环境实测，不能保证触发原 issue。
