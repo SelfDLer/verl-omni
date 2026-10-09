@@ -141,13 +141,10 @@ class vLLMOmniColocateWorkerExtension(CustomPipelineWorkerExtension):
 
         install(self)
 
-    def register_video_trace(self, request_id, context):
-        from verl_omni.utils.video_trace_worker import install
+    def register_video_trace(self, request_id, context, trace_options=None):
+        from verl_omni.utils.video_trace_worker import register_worker
 
-        install(self)
-        observer = getattr(self, "_video_observer", None)
-        if observer is not None:
-            observer.register(request_id, context)
+        return register_worker(self, request_id, context, trace_options)
 
     def update_weights_from_ipc(
         self,

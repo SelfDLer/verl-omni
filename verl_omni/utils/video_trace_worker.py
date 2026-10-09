@@ -17,10 +17,20 @@ import functools
 import importlib.metadata
 import inspect
 import os
+import socket
 from collections import OrderedDict
 
 from verl_omni.utils import video_trace as trace
 from verl_omni.utils.video_trace_frontend import feature_records
+
+_TRACE_DEFAULTS = {
+    "VERL_OMNI_VIDEO_TRACE_DIR": "",
+    "VERL_OMNI_VIDEO_TRACE_STAGE": "boundary",
+    "VERL_OMNI_VIDEO_TRACE_MODE": "metadata",
+    "VERL_OMNI_VIDEO_TRACE_DEVICE_SAMPLE": "0",
+    "VERL_OMNI_VIDEO_TRACE_MAX_BYTES": "8388608",
+    "VERL_OMNI_VIDEO_TRACE_MAX_TOKENS": "32768",
+}
 
 
 def enabled():
@@ -77,6 +87,7 @@ class WorkerObserver:
         self.pending = OrderedDict()
         self.requests = {}
         self.active = []
+        self.hooks = {}
         self.rank = getattr(worker, "rank", None)
         self.local_rank = getattr(worker, "local_rank", None)
         self.runtime = {}
@@ -275,10 +286,12 @@ class WorkerObserver:
                         self.active = previous
 
             setattr(self.runner, name, observed)
+            self.hooks[name] = {"status": "installed", "signature": str(signature)}
             trace.event(
                 "trace.install", force=True, boundary="worker." + name, status="installed", worker_rank=self.rank
             )
         except Exception as exc:
+            self.hooks[name] = {"status": "unavailable", "error": str(exc)}
             trace.event("trace.install", force=True, boundary="worker." + name, status="unavailable", error=str(exc))
 
 
@@ -299,13 +312,48 @@ def install(worker):
         trace.event("trace.install", force=True, boundary="worker", status="unavailable", error=str(exc))
 
 
+def register_worker(worker, request_id, context, trace_options=None):
+    """Return worker-side evidence even when its trace environment is missing."""
+    if trace_options is not None and context.get("selected"):
+        for name in _TRACE_DEFAULTS:
+            value = trace_options.get(name)
+            if isinstance(value, str):
+                os.environ[name] = value
+    reply = {
+        "video_trace_ack": True,
+        "host": socket.gethostname(),
+        "pid": os.getpid(),
+        "worker_rank": getattr(worker, "rank", None),
+        "trace_dir": os.environ.get("VERL_OMNI_VIDEO_TRACE_DIR", ""),
+        "trace_stage": os.environ.get("VERL_OMNI_VIDEO_TRACE_STAGE", "boundary"),
+        "device_sample": os.environ.get("VERL_OMNI_VIDEO_TRACE_DEVICE_SAMPLE", "0"),
+        "status": "disabled",
+    }
+    if not enabled():
+        return reply
+    install(worker)
+    observer = getattr(worker, "_video_observer", None)
+    if observer is None:
+        return {**reply, "status": "unavailable"}
+    observer.register(request_id, context)
+    return {
+        **reply,
+        "status": "registered" if request_id in observer.pending else "not_selected",
+        "hooks": observer.hooks,
+        "trace_file": str(trace._sink.path) if trace._sink is not None else None,
+    }
+
+
 async def register(server, request_id):
     """Send scalar diagnostic context separately from the inference request."""
     context = trace.export_context()
     if not enabled() or not context.get("selected"):
         return
     try:
-        await server.collective_rpc(method="register_video_trace", timeout=10.0, args=(request_id, context))
-        trace.event("trace.worker_registration", status="sent", request_id=request_id)
+        options = {name: os.environ.get(name, default) for name, default in _TRACE_DEFAULTS.items()}
+        replies = await server.collective_rpc(
+            method="register_video_trace", timeout=10.0, args=(request_id, context), kwargs={"trace_options": options}
+        )
+        trace.event("trace.worker_registration", status="returned", request_id=request_id, worker_replies=replies)
     except Exception as exc:
         trace.event("trace.worker_registration", status="failed", error=str(exc))

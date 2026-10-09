@@ -158,6 +158,99 @@ def test_worker_registration_without_coverage_and_different_chunking_are_unknown
     )
 
 
+def test_report_distinguishes_missing_capture_from_device_metadata(tmp_path):
+    single, multi = request(), request("multi")
+    for records in (single, multi):
+        records.append(worker_record(records, "trace.worker_registration", status="sent"))
+    report = compare(tmp_path, multi, single)
+    text = COMPARE["markdown"](report)
+    assert "no_worker_records_for_selected_trace" in text
+    assert "worker_event_not_recorded_in_either_run" in text
+    assert "Legacy status=sent does not prove tracing was enabled" in text
+    for records in (single, multi):
+        records.append(
+            worker_record(
+                records,
+                "worker.receive",
+                prompt_token_snapshot=tokens([1, 2]),
+                sampling_params={"seed": None},
+                multimodal_features=[{"data": pixels(mode="metadata_only")}],
+            )
+        )
+    report = compare(tmp_path, multi, single)
+    received = next(row for row in report["stages"] if row["stage"].startswith("worker.receive"))
+    assert received["components"]["prompt"]["status"] == "equal"
+    assert received["components"]["sampling_params"]["status"] == "equal"
+    assert received["components"]["multimodal_features"]["status"] == "unknown"
+    assert "metadata_only" in COMPARE["markdown"](report)
+
+
+def test_full_encoder_cache_compares_across_chunking_and_repeated_reads(tmp_path):
+    single, multi = request(), request("multi")
+    single.append(
+        worker_record(
+            single, "worker.encoder.read", chunk_start=0, chunk_tokens=10, feature_index=0, embedding=pixels()
+        )
+    )
+    for start in (0, 5):
+        multi.append(
+            worker_record(
+                multi, "worker.encoder.read", chunk_start=start, chunk_tokens=5, feature_index=0, embedding=pixels()
+            )
+        )
+    report = compare(tmp_path, multi, single)
+    reads = [row for row in report["stages"] if row["stage"].startswith("worker.encoder.read")]
+    assert len(reads) == 1
+    assert reads[0]["components"]["embedding"]["status"] == "sample_equal"
+    assert len(reads[0]["sources"]["multi"]) == 2
+    multi[-1]["embedding"] = pixels(b"changed cache")
+    report = compare(tmp_path, multi, single)
+    row = next(row for row in report["stages"] if row["stage"].startswith("worker.encoder.read"))
+    assert row["components"]["embedding"]["status"] == "unknown"
+    assert row["components"]["embedding"]["reason"] == "repeated_worker_event_not_aligned"
+
+
+def test_worker_acknowledgement_shows_disabled_environment_without_worker_files(tmp_path):
+    single, multi = request(), request("multi")
+    for records in (single, multi):
+        records.append(
+            worker_record(
+                records,
+                "trace.worker_registration",
+                status="returned",
+                worker_replies=[
+                    [{"video_trace_ack": True, "status": "disabled", "trace_stage": "boundary", "device_sample": "0"}]
+                ],
+            )
+        )
+    report = compare(tmp_path, multi, single)
+    assert report["worker_coverage"]["single"]["worker_acknowledgements"][0]["status"] == "disabled"
+    assert "status `disabled`, stage `boundary`" in COMPARE["markdown"](report)
+
+
+def test_report_identifies_missing_files_and_exact_unmatched_target(tmp_path):
+    single, multi = request(), request("multi")
+    for records in (single, multi):
+        row = next(r for r in records if r["event"] == "frontend.build.features")
+        row["core_request_id"] = "exact-core-id"
+        records.append(
+            worker_record(
+                records,
+                "trace.worker_registration",
+                status="returned",
+                worker_replies=[
+                    {"video_trace_ack": True, "status": "registered", "trace_file": "/tmp/video-v2-worker.jsonl"}
+                ],
+            )
+        )
+        records.append({"event": "trace.worker_unmatched", "core_request_id": "exact-core-id"})
+    report = compare(tmp_path, multi, single)
+    coverage = report["worker_coverage"]["single"]
+    assert coverage["expected_worker_files_not_supplied"] == ["/tmp/video-v2-worker.jsonl"]
+    assert len(coverage["unmatched_target_requests"]) == 1
+    assert "request reached a worker but trace context was not associated" in COMPARE["markdown"](report)
+
+
 def test_worker_audio_difference_and_frontend_position_difference_are_visible(tmp_path):
     single, multi = request(), request("multi")
     for records, value in ((single, b"audio1"), (multi, b"audio2")):

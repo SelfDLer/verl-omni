@@ -363,8 +363,10 @@ NNODES=2 VAL_MAX_SAMPLES=256 \
 | `worker.gather` | 该请求当前 prefill 区间的实际多模态 mask、batch offset | batch offset 不同是正常调度差异；mask 本身不区分音频/视频，要结合 feature_index/占位区间 |
 | `worker.model_input` | runner 预处理返回、进入模型执行前的该请求 embedding 与 positions 切片 | 不证明模型注意力实际利用了视频，也不覆盖 logits |
 
-先检查 `trace.worker_registration` 和 `trace.install`。仅对选定请求额外发送一次诊断 RPC，传递标量上下文，
-不修改生成参数或请求 ID。worker 用 Omni 自带的 `global_request_id` 精确关联，保留实际 EngineCore ID；
+先检查 `trace.worker_registration` 和 `trace.install`。仅对选定请求额外发送一次诊断 RPC，传递标量上下文及
+六个诊断设置（DIR/STAGE/MODE/DEVICE_SAMPLE/MAX_BYTES/MAX_TOKENS），不依赖子 worker 是否继承服务进程的环境。
+不修改生成参数或请求 ID。RPC 回传每个 worker 的启用状态、实际诊断配置、hook 安装结果和日志文件路径；
+`status=registered` 表示已登记观测上下文，不等于已匹配并采集请求。worker 用 Omni 自带的 `global_request_id` 精确关联，保留实际 EngineCore ID；
 找不到该字段时不会猜测 UUID 后缀。`trace.worker_unmatched`、注册失败或缺失 worker 事件都表示覆盖不足。
 worker 日志仍带同一 sample_key/trace_id，所以比较器会一起收集，不按两机墙钟或日志行号配对。
 
@@ -376,8 +378,10 @@ worker 日志仍带同一 sample_key/trace_id，所以比较器会一起收集�
 每请求每 worker 最多记录 32 个 prefill 区间、256 个观测事件；达到上限会记录 `trace.worker_*limit`，
 不能将缺少后续事件解释为“没有视频”。后台队列满、摘要跳过和版本接口缺失同样不能当成相等。
 
-比较表新增 worker 阶段，按 worker rank、精确的 chunk_start/chunk_tokens 和 feature_index 对齐。
-两边 chunk 切分不同、重复调用或 worker rank 缺失会标 `unknown`，不强行配对。
+比较表新增 worker 阶段。模型输入和 mask 按 worker rank、精确的 chunk_start/chunk_tokens 对齐；
+编码缓存方法返回整个特征，因此按 rank/feature_index 对齐，不再要求它们的 prefill chunk 相同。
+重复缓存读取仅在已记录内容摘要一致时合并比较，保留全部来源；缓存值变化时不擅自选择其中一次。
+模型输入 chunk 切分不同、无法对齐的重复调用或 worker rank 缺失会标 `unknown`，不强行配对。
 `worker_runtime` 在 comparison.json 中保留实际 seed 和版本，Markdown 也列出有效 seed；
 这些配置差异是线索，不自动认定为内容损坏。特别是 request seed=null 时，replica 的有效 seed 仍可能不同。
 
@@ -385,6 +389,25 @@ worker 日志仍带同一 sample_key/trace_id，所以比较器会一起收集�
 如果这些可观测内容都一致，调查范围才继续移向权重、模型计算和采样；`sample_equal` 仍只是抽样一致。
 只在另做的控制实验中同时设置两边 `actor_rollout_ref.rollout.val_kwargs.temperature=0.0`，
 保留原始随机采样实验作为对照；不要让排查脚本偷偷改变原实验。
+
+### worker 全部 unknown、sources 为空
+
+这表示比较器没有找到匹配的 worker 事件，不是 `DEVICE_SAMPLE=0` 的正常表现。
+关闭设备抽样只会使设备内容未知；如果 `worker.receive` 被正常采集，其 CPU prompt 和采样参数仍可比较。
+不要通过把 `unknown` 改成 `equal`，或盲目开启设备抽样来掩盖缺失。
+
+更新比较器后，可以先用原命令重新分析**现有原始日志**，不必先跑模型。
+Markdown 会直接显示每一项 unknown 的具体原因和两边的 worker coverage；JSON 的 `worker_coverage` 中还包括：
+
+- `event_counts`：目标 trace 实际匹配的 worker 事件数。
+- `worker_file_inventory`：传入文件里是否存在其他 worker 事件或安装记录。
+- `unmatched_target_requests`：前端的精确 core_request_id 是否出现在 worker 未关联记录中。
+- `worker_acknowledgements`：新版本注册 RPC 返回的实际启用状态与配置。
+- `expected_worker_files_not_supplied`：worker 回报的日志文件不在分析输入内；需要检查收集范围或写入错误。
+
+旧版 `trace.worker_registration.status=sent` 只说明 RPC 返回，不能证明 worker 启用了观测。
+旧日志没有回执时，新比较器会明确注明，不推断其环境设置。若实际 worker 载荷根本没被采集，离线比较无法补回它；
+需要用修正后的注册链路重新采集。若只是遗漏文件，收齐文件后重新比较即可。
 
 ## 本地检查
 

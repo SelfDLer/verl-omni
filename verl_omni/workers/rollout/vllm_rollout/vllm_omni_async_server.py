@@ -230,7 +230,7 @@ class vLLMOmniHttpServer(vLLMHttpServer):
         kwargs: dict[str, Any] | None = None,
     ):
         """Dispatch a shared RPC to the stages selected by the active strategy."""
-        await self.engine.collective_rpc(
+        return await self.engine.collective_rpc(
             method=method,
             timeout=timeout,
             args=args,

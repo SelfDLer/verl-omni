@@ -224,6 +224,71 @@ def test_registration_failure_does_not_change_request_or_cancel_generation(worke
     assert next(r for r in rows(trace) if r["event"] == "trace.worker_registration")["status"] == "failed"
 
 
+def test_worker_acknowledgement_reports_disabled_and_unavailable_hooks(worker_module, trace, monkeypatch):
+    worker = NS(model_runner=Runner(), rank=0)
+    monkeypatch.setenv("VERL_OMNI_VIDEO_TRACE_STAGE", "boundary")
+    reply = worker_module.register_worker(worker, "external", {"selected": True})
+    assert reply["status"] == "disabled"
+    assert not hasattr(worker, "_video_observer")
+    monkeypatch.setenv("VERL_OMNI_VIDEO_TRACE_STAGE", "worker")
+    worker.model_runner._preprocess = lambda unexpected_signature: None
+    reply = worker_module.register_worker(worker, "external", {"selected": True})
+    assert reply["status"] == "registered"
+    assert reply["hooks"]["_preprocess"]["status"] == "unavailable"
+    assert reply["hooks"]["_update_states"]["status"] == "installed"
+
+
+def test_registration_configures_worker_when_ray_did_not_forward_environment(worker_module, trace, monkeypatch):
+    options = {name: os.environ.get(name, default) for name, default in worker_module._TRACE_DEFAULTS.items()}
+    options["UNRELATED_GENERATION_SETTING"] = "must-not-be-applied"
+    monkeypatch.delenv("VERL_OMNI_VIDEO_TRACE_DIR")
+    monkeypatch.setenv("VERL_OMNI_VIDEO_TRACE_STAGE", "boundary")
+    worker = NS(model_runner=Runner(), rank=0)
+    reply = worker_module.register_worker(worker, "external", {"selected": True}, options)
+    assert reply["status"] == "registered"
+    assert reply["trace_stage"] == "worker"
+    assert reply["device_sample"] == "0"
+    assert reply["trace_file"]
+    assert "UNRELATED_GENERATION_SETTING" not in os.environ
+    assert worker._video_observer.pending["external"]["selected"]
+
+
+def test_real_server_collective_rpc_preserves_worker_acknowledgements():
+    path = helpers.ROOT / "verl_omni/workers/rollout/vllm_rollout/vllm_omni_async_server.py"
+    method = next(
+        n
+        for n in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "collective_rpc"
+    )
+    unit = ast.Module(
+        body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0), method],
+        type_ignores=[],
+    )
+    namespace = {}
+    exec(compile(ast.fix_missing_locations(unit), str(path), "exec"), namespace)
+    replies = [[{"video_trace_ack": True, "status": "registered"}]]
+
+    class Engine:
+        async def collective_rpc(self, **kwargs):
+            assert kwargs["stage_ids"] == [0]
+            return replies
+
+    server = NS(engine=Engine(), _generate_strategy=NS(collective_rpc_stage_ids=lambda _: [0]))
+    assert asyncio.run(namespace["collective_rpc"](server, "register_video_trace")) is replies
+
+
+def test_registration_retains_worker_replies_in_server_trace(worker_module, trace):
+    class Server:
+        async def collective_rpc(self, **kwargs):
+            return [[{"video_trace_ack": True, "status": "disabled", "trace_stage": "boundary"}]]
+
+    with trace.scope("agent"):
+        asyncio.run(worker_module.register(Server(), "external"))
+    record = next(r for r in rows(trace) if r["event"] == "trace.worker_registration")
+    assert record["status"] == "returned"
+    assert record["worker_replies"][0][0]["status"] == "disabled"
+
+
 def test_actual_ar_generation_keeps_params_and_output_with_worker_registration(worker_module, trace, monkeypatch):
     monkeypatch.setitem(sys.modules, "verl_omni.utils.video_trace_worker", worker_module)
     path = helpers.ROOT / "verl_omni/workers/rollout/vllm_rollout/vllm_omni_ar_strategy.py"

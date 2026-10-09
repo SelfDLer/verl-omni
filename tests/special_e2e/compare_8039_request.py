@@ -59,6 +59,8 @@ def load_request(paths, sample_key, trace_id=None):
     if not files:
         raise ValueError("No video-v2-*.jsonl files found")
     groups, writers, installs, warnings = defaultdict(list), {}, [], []
+    worker_diagnostics = []
+    worker_inventory = defaultdict(lambda: defaultdict(int))
     seen = {}
     for path in sorted(files):
         with path.open(encoding="utf-8") as stream:
@@ -78,7 +80,17 @@ def load_request(paths, sample_key, trace_id=None):
                 else:
                     writers[writer] = max(writers.get(writer, 0), dropped)
                 if row.get("event") == "trace.install":
-                    installs.append(row)
+                    installs.append({**row, "_source": source})
+                if row.get("event", "").startswith("worker.") or (
+                    row.get("event") == "trace.install" and row.get("boundary", "").startswith("worker")
+                ):
+                    worker_inventory[str(path)][row["event"]] += 1
+                if row.get("event") in {
+                    "trace.worker_unmatched",
+                    "trace.observation_error",
+                    "trace.worker_registration_evicted",
+                }:
+                    worker_diagnostics.append({**row, "_source": source})
                 if row.get("event") in {
                     "trace.observation_error",
                     "trace.worker_limit",
@@ -124,6 +136,9 @@ def load_request(paths, sample_key, trace_id=None):
         "warnings": warnings,
         "dropped_events": sum(writers.values()),
         "frontend_installation": installs,
+        "worker_diagnostics": worker_diagnostics,
+        "input_files": [str(path) for path in sorted(files)],
+        "worker_file_inventory": {path: dict(counts) for path, counts in worker_inventory.items()},
     }
 
 
@@ -326,26 +341,66 @@ def _worker_stages(left, right, tokenizer):
     )
     result = []
     for event, fields in specs:
+        is_cache = event in {"worker.encoder.write", "worker.encoder.read"}
         groups = []
         for side in (left, right):
             grouped = defaultdict(list)
             for row in side["records"]:
                 if row.get("event") == event:
-                    key = tuple(row.get(k) for k in ("worker_rank", "chunk_start", "chunk_tokens", "feature_index"))
+                    key = (
+                        row.get("worker_rank"),
+                        None if is_cache else row.get("chunk_start"),
+                        None if is_cache else row.get("chunk_tokens"),
+                        row.get("feature_index"),
+                    )
                     grouped[key].append(row)
             groups.append(grouped)
         keys = groups[0].keys() | groups[1].keys()
         for key in sorted(keys or {(None, None, None, None)}, key=repr):
             a, b = (group.get(key, []) for group in groups)
+            sources = {"single": [r["_source"] for r in a], "multi": [r["_source"] for r in b]}
+            # Cache methods return the whole feature, independently of prefill
+            # chunk boundaries. Collapse repeated reads only when all recorded
+            # content fingerprints agree; never choose a changing cache value.
+            if is_cache:
+
+                def collapse(rows):
+                    if (
+                        rows
+                        and rows[0].get("embedding") is not None
+                        and all(
+                            _trees(rows[0]["embedding"], row.get("embedding"), require_arrays=True)["status"]
+                            in ("equal", "sample_equal")
+                            for row in rows[1:]
+                        )
+                    ):
+                        return rows[:1]
+                    return rows
+
+                a, b = collapse(a), collapse(b)
             comparisons = {}
+            reason = None
+            if not a or not b:
+                missing = "both" if not a and not b else "single" if not a else "multi"
+                if not any(groups):
+                    reason = "worker_event_not_recorded_in_either_run"
+                elif any(group and key not in group for group in groups):
+                    reason = "worker_rank_or_token_interval_not_aligned"
+                else:
+                    reason = "worker_event_missing_" + missing
+            elif key[0] is None:
+                reason = "worker_rank_not_recorded"
+            elif len(a) != 1 or len(b) != 1:
+                reason = "repeated_worker_event_not_aligned"
+            elif any(len(side["routes"]) != 1 for side in (left, right)):
+                reason = "engine_attempts_not_unambiguously_aligned"
             for field in fields:
-                if (
-                    key[0] is None
-                    or len(a) != 1
-                    or len(b) != 1
-                    or any(len(side["routes"]) != 1 for side in (left, right))
-                ):
-                    comparison = {"status": "unknown", "reason": "missing_or_ambiguous_worker_rank_chunk_or_attempt"}
+                if reason:
+                    comparison = {
+                        "status": "unknown",
+                        "reason": reason,
+                        "record_counts": {"single": len(a), "multi": len(b)},
+                    }
                 elif field == "prompt":
                     comparison = _tokens(a[0], b[0], "prompt_token_snapshot", tokenizer)
                 elif a[0].get(field) is None or b[0].get(field) is None:
@@ -357,10 +412,83 @@ def _worker_stages(left, right, tokenizer):
                 {
                     "stage": f"{event} [rank={key[0]}, start={key[1]}, tokens={key[2]}, feature={key[3]}]",
                     "components": comparisons,
-                    "sources": {"single": [r["_source"] for r in a], "multi": [r["_source"] for r in b]},
+                    "sources": sources,
                 }
             )
     return result
+
+
+def _worker_coverage(side):
+    counts = defaultdict(int)
+    for row in side["records"]:
+        event = row.get("event", "")
+        if event in {
+            "worker.receive",
+            "worker.encoder.write",
+            "worker.encoder.read",
+            "worker.gather",
+            "worker.model_input",
+        }:
+            counts[event] += 1
+    installations = [
+        row for row in side.get("frontend_installation", []) if row.get("boundary", "").startswith("worker")
+    ]
+    registrations = [row for row in side["records"] if row.get("event") == "trace.worker_registration"]
+
+    def acknowledgements(value):
+        if isinstance(value, dict):
+            if value.get("video_trace_ack") is True:
+                yield value
+            else:
+                for item in value.values():
+                    yield from acknowledgements(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from acknowledgements(item)
+
+    replies = [ack for row in registrations for ack in acknowledgements(row.get("worker_replies"))]
+    supplied_names = {Path(path).name for path in side.get("input_files", [])}
+    missing_files = [
+        reply["trace_file"]
+        for reply in replies
+        if reply.get("trace_file") and Path(reply["trace_file"]).name not in supplied_names
+    ]
+    core_ids = {
+        row["core_request_id"]
+        for row in side["records"]
+        if row.get("event", "").startswith("frontend.") and row.get("core_request_id")
+    }
+    unmatched = [
+        row
+        for row in side.get("worker_diagnostics", [])
+        if row.get("event") == "trace.worker_unmatched" and row.get("core_request_id") in core_ids
+    ]
+    return {
+        "event_counts": dict(counts),
+        "registration": registrations,
+        "worker_acknowledgements": replies,
+        "expected_worker_files_not_supplied": missing_files,
+        "unmatched_target_requests": unmatched,
+        "worker_file_inventory": side.get("worker_file_inventory", {}),
+        "installation": installations,
+        "diagnostics_from_input_files": side.get("worker_diagnostics", []),
+        "status": "worker_records_present" if counts else "no_worker_records_for_selected_trace",
+        "note": "Installations and unscoped diagnostics describe input files, not necessarily this request's workers. "
+        "Registration status=sent only confirms the RPC returned, "
+        "not that observation was enabled or the request matched.",
+    }
+
+
+def _unknown_reason(value):
+    if value.get("reason"):
+        return value["reason"]
+    gaps = value.get("gaps", {})
+    reasons = sorted({str(reason) for side in gaps.values() for reason in side.values()})
+    if reasons:
+        return ", ".join(reasons)
+    return (
+        "; ".join(f"{side}={value[side]}" for side in ("single", "multi") if side in value) or "insufficient_evidence"
+    )
 
 
 def compare(left, right, tokenizer=None):
@@ -419,6 +547,9 @@ def compare(left, right, tokenizer=None):
         ),
         "first_difference_by_component": first,
         "stages": stages,
+        "worker_coverage": {label: _worker_coverage(side) for label, side in (("single", left), ("multi", right))}
+        if deep
+        else {},
         "worker_runtime": {
             label: [
                 {key: row.get(key) for key in ("host", "pid", "worker_rank", "runtime", "_source")}
@@ -457,7 +588,15 @@ def markdown(report):
         "| --- | --- |",
     ]
     for row in report["stages"]:
-        cells = "; ".join(f"{key}: **{value['status']}**" for key, value in row["components"].items())
+        cells = (
+            "; ".join(
+                f"{key}: **{value['status']}**"
+                + (f" ({_unknown_reason(value)})" if value["status"] == "unknown" else "")
+                for key, value in row["components"].items()
+            )
+            .replace("|", "\\|")
+            .replace("\n", " ")
+        )
         lines.append(f"| `{row['stage']}` | {cells} |")
     for side in ("single", "multi"):
         data = report[side]
@@ -469,6 +608,49 @@ def markdown(report):
                 f"request `{route['request_id']}`"
             )
         lines.extend(f"- Warning: {item}" for item in data["warnings"])
+        coverage = report.get("worker_coverage", {}).get(side)
+        if coverage:
+            lines.append(f"- Worker coverage: `{coverage['status']}`; events: `{coverage['event_counts']}`")
+            if not coverage["event_counts"]:
+                lines.append(
+                    "- No worker payloads are available for this trace. "
+                    "This is a collection/correlation gap, not an embedding comparison result."
+                )
+            for path in coverage["expected_worker_files_not_supplied"]:
+                lines.append(
+                    f"- Expected worker file is absent from analysis inputs: `{path}`. "
+                    "Check file collection and writer errors."
+                )
+            if coverage["unmatched_target_requests"]:
+                lines.append(
+                    "- The exact frontend core request ID appears in worker_unmatched: "
+                    "the request reached a worker but trace context was not associated."
+                )
+            lines.append(
+                f"- Files containing any worker events/installations: `{len(coverage['worker_file_inventory'])}`"
+            )
+            lines.append(
+                f"- Worker registration statuses: `{[r.get('status') for r in coverage['registration']]}`; "
+                f"worker hook installation records in input files: `{len(coverage['installation'])}`"
+            )
+            if coverage["registration"] and not coverage["worker_acknowledgements"]:
+                lines.append(
+                    "- No worker acknowledgement was recorded. Legacy status=sent does not prove tracing was enabled."
+                )
+            for reply in coverage["worker_acknowledgements"]:
+                lines.append(
+                    f"- Worker acknowledgement: host `{reply.get('host')}`, rank `{reply.get('worker_rank')}`, "
+                    f"status `{reply.get('status')}`, stage `{reply.get('trace_stage')}`, "
+                    f"device_sample `{reply.get('device_sample')}`, directory `{reply.get('trace_dir')}`"
+                )
+                for name, hook in reply.get("hooks", {}).items():
+                    if hook.get("status") != "installed":
+                        lines.append(f"- Worker hook `{name}`: {hook}")
+            for row in coverage["installation"]:
+                if row.get("status") != "installed":
+                    lines.append(
+                        f"- Worker hook unavailable: `{row.get('boundary')}`: {row.get('error')} ({row.get('_source')})"
+                    )
         for worker in report.get("worker_runtime", {}).get(side, []):
             seed = (worker.get("runtime") or {}).get("model_config", {}).get("seed")
             lines.append(
