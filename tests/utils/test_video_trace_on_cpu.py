@@ -19,6 +19,7 @@ import contextvars
 import hashlib
 import importlib.util
 import json
+import os
 import sys
 import threading
 from pathlib import Path
@@ -505,7 +506,7 @@ def test_real_ar_strategy_observes_original_completion_without_changing_generati
         body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0), *methods],
         type_ignores=[],
     )
-    namespace = {"trace": trace, "TokenOutput": SimpleNamespace}
+    namespace = {"trace": trace, "TokenOutput": SimpleNamespace, "os": os}
     exec(compile(ast.fix_missing_locations(unit), str(path), "exec"), namespace)
     completion = SimpleNamespace(token_ids=[11, 12], text="B", finish_reason="stop")
     final = SimpleNamespace(outputs=[completion])

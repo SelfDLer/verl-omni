@@ -21,6 +21,20 @@ from collections.abc import Mapping
 from verl_omni.utils import video_trace as trace
 
 
+def feature_records(features):
+    records = []
+    for index, item in enumerate(features):
+        position = getattr(item, "mm_position", None)
+        records.append(
+            {
+                "feature_index": index,
+                **{key: getattr(item, key, None) for key in ("modality", "identifier", "mm_hash", "data")},
+                "position": {key: getattr(position, key, None) for key in ("offset", "length", "is_embed")},
+            }
+        )
+    return records
+
+
 def _observe(name, arguments, result=None, after=False):
     value = arguments.get("prompt", arguments.get("parsed_content"))
     trace.prompt(
@@ -44,7 +58,9 @@ def _observe(name, arguments, result=None, after=False):
         trace.event(
             name + ".features",
             video_kwargs=kwargs.get("video") if isinstance(kwargs, Mapping) else None,
+            audio_kwargs=kwargs.get("audio") if isinstance(kwargs, Mapping) else None,
             mm_hashes=result.get("mm_hashes"),
+            mm_placeholders=result.get("mm_placeholders"),
         )
     else:
         features = getattr(request, "mm_features", None)
@@ -57,6 +73,7 @@ def _observe(name, arguments, result=None, after=False):
                     for item in features
                     if getattr(item, "modality", None) == "video"
                 ],
+                multimodal_features=feature_records(features),
             )
 
 
@@ -99,7 +116,7 @@ def _attach(owner, method_name, event_name, required):
 
 def install(engine_client):
     """Opt into frontend observations without modifying global vLLM classes."""
-    if not trace.enabled() or os.environ.get("VERL_OMNI_VIDEO_TRACE_STAGE", "boundary") != "frontend":
+    if not trace.enabled() or os.environ.get("VERL_OMNI_VIDEO_TRACE_STAGE", "boundary") not in ("frontend", "worker"):
         return
     engine = getattr(engine_client, "engine", None)
     processor = getattr(engine, "input_processor", None)

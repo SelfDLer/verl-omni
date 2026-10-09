@@ -79,6 +79,14 @@ def load_request(paths, sample_key, trace_id=None):
                     writers[writer] = max(writers.get(writer, 0), dropped)
                 if row.get("event") == "trace.install":
                     installs.append(row)
+                if row.get("event") in {
+                    "trace.observation_error",
+                    "trace.worker_limit",
+                    "trace.worker_chunk_limit",
+                    "trace.worker_layout_unknown",
+                    "trace.worker_registration_evicted",
+                }:
+                    warnings.append(f"{source}: {row['event']}: {row.get('error', '')}")
                 if row.get("sample_key") is None or str(row["sample_key"]) != sample_key:
                     continue
                 if not row.get("trace_id"):
@@ -188,6 +196,8 @@ def _flatten(value, path, values, unknown, arrays):
 
 
 def _payload(row, component):
+    if component == "multimodal":
+        return row.get("multimodal_features"), None if "multimodal_features" in row else "missing_field"
     if component == "features":
         if "video_features" in row:
             features = row["video_features"]
@@ -198,7 +208,9 @@ def _payload(row, component):
             return [item["data"] for item in features], None
         value = row.get("video_kwargs")
         return value, "cache_omitted_or_missing_feature_data" if value is None else None
-    field = {"video": "video", "processor": "mm_processor_kwargs", "sampling": "sampling_params"}[component]
+    field = {"video": "video", "audio": "audio", "processor": "mm_processor_kwargs", "sampling": "sampling_params"}[
+        component
+    ]
     if field not in row:
         return None, "missing_field"
     value = row[field]
@@ -294,15 +306,89 @@ def _compare_stage(left, right, stage, components, tokenizer):
             result[component] = (
                 {"status": "unknown", "single": xe, "multi": ye}
                 if xe or ye
-                else _trees(x, y, require_arrays=component in ("video", "features"))
+                else _trees(
+                    x,
+                    y,
+                    require_arrays=component in ("video", "features", "multimodal")
+                    or (component == "audio" and x is not None and y is not None),
+                )
             )
     return {"stage": stage, "components": result, "sources": references}
+
+
+def _worker_stages(left, right, tokenizer):
+    specs = (
+        ("worker.receive", ("prompt", "multimodal_features", "sampling_params")),
+        ("worker.encoder.write", ("embedding",)),
+        ("worker.encoder.read", ("embedding",)),
+        ("worker.gather", ("mask",)),
+        ("worker.model_input", ("embedding", "positions")),
+    )
+    result = []
+    for event, fields in specs:
+        groups = []
+        for side in (left, right):
+            grouped = defaultdict(list)
+            for row in side["records"]:
+                if row.get("event") == event:
+                    key = tuple(row.get(k) for k in ("worker_rank", "chunk_start", "chunk_tokens", "feature_index"))
+                    grouped[key].append(row)
+            groups.append(grouped)
+        keys = groups[0].keys() | groups[1].keys()
+        for key in sorted(keys or {(None, None, None, None)}, key=repr):
+            a, b = (group.get(key, []) for group in groups)
+            comparisons = {}
+            for field in fields:
+                if (
+                    key[0] is None
+                    or len(a) != 1
+                    or len(b) != 1
+                    or any(len(side["routes"]) != 1 for side in (left, right))
+                ):
+                    comparison = {"status": "unknown", "reason": "missing_or_ambiguous_worker_rank_chunk_or_attempt"}
+                elif field == "prompt":
+                    comparison = _tokens(a[0], b[0], "prompt_token_snapshot", tokenizer)
+                elif a[0].get(field) is None or b[0].get(field) is None:
+                    comparison = {"status": "unknown", "reason": "missing_worker_payload"}
+                else:
+                    comparison = _trees(a[0][field], b[0][field], require_arrays=field != "sampling_params")
+                comparisons[field] = comparison
+            result.append(
+                {
+                    "stage": f"{event} [rank={key[0]}, start={key[1]}, tokens={key[2]}, feature={key[3]}]",
+                    "components": comparisons,
+                    "sources": {"single": [r["_source"] for r in a], "multi": [r["_source"] for r in b]},
+                }
+            )
+    return result
 
 
 def compare(left, right, tokenizer=None):
     if left["identity"] != right["identity"]:
         raise ValueError(f"Sample identity differs: {left['identity']} vs {right['identity']}")
-    stages = [_compare_stage(left, right, stage, fields, tokenizer) for stage, fields in _STAGES]
+    stages = []
+    for stage, fields in _STAGES:
+        if "video" in fields and any(
+            row.get("event") == stage and "audio" in row for side in (left, right) for row in side["records"]
+        ):
+            fields = (*fields, "audio")
+        if (
+            stage.startswith("frontend.")
+            and stage.endswith(".features")
+            and any(
+                row.get("event") == stage and "multimodal_features" in row
+                for side in (left, right)
+                for row in side["records"]
+            )
+        ):
+            fields = (*fields, "multimodal")
+        stages.append(_compare_stage(left, right, stage, fields, tokenizer))
+    deep = any(row.get("event", "").startswith("worker.") for side in (left, right) for row in side["records"])
+    # Registration without worker records must still expose missing coverage.
+    deep |= any(row.get("event") == "trace.worker_registration" for side in (left, right) for row in side["records"])
+    if deep:
+        index = next(i for i, row in enumerate(stages) if row["stage"] == "strategy.result")
+        stages[index:index] = _worker_stages(left, right, tokenizer)
     first, previous, gaps = {}, {}, defaultdict(list)
     for row in stages:
         for component, result in row["components"].items():
@@ -333,13 +419,26 @@ def compare(left, right, tokenizer=None):
         ),
         "first_difference_by_component": first,
         "stages": stages,
+        "worker_runtime": {
+            label: [
+                {key: row.get(key) for key in ("host", "pid", "worker_rank", "runtime", "_source")}
+                for row in side["records"]
+                if row.get("event") == "worker.receive"
+            ]
+            for label, side in (("single", left), ("multi", right))
+        },
         "limitations": [
             "Stage order follows the logical request path, not cross-host wall clocks.",
             "A difference is an observation, not proof of corruption or its cause; sampling can change responses.",
             "sample_equal checks at most 256 elements per array; metadata-only/skipped content remains unknown.",
             "Missing/cache-omitted data and multiple engine attempts are not treated as equal or corrupt.",
             "Cache identifiers, addresses and strides are preserved in raw records, not compared as content.",
-            "Audio content, worker cache recovery, vision encoder inputs/outputs, weights and logits are not covered.",
+            "Worker mode observes recovered video/audio features, encoder cache reads/writes and model inputs; "
+            "absent events remain unknown.",
+            "Worker device contents require DEVICE_SAMPLE=1; this introduces device reads and can affect scheduling.",
+            "Worker chunks are aligned by rank and exact token interval; different chunking is not a content mismatch.",
+            "EngineCore internals, encoder internals, runtime weights and logits are not covered; "
+            "model input observation does not prove attention used video.",
         ],
     }
 
@@ -370,6 +469,11 @@ def markdown(report):
                 f"request `{route['request_id']}`"
             )
         lines.extend(f"- Warning: {item}" for item in data["warnings"])
+        for worker in report.get("worker_runtime", {}).get(side, []):
+            seed = (worker.get("runtime") or {}).get("model_config", {}).get("seed")
+            lines.append(
+                f"- Worker rank `{worker['worker_rank']}`, host `{worker['host']}`, effective model seed `{seed}`"
+            )
     lines.extend(
         ["", "equal = recorded values match; sample_equal = sampled values match; unknown = insufficient evidence."]
     )

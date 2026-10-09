@@ -54,6 +54,7 @@ if [[ -n ${VERL_OMNI_VIDEO_TRACE_DIR:-} ]]; then
         "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_MAX_REQUESTS='${VERL_OMNI_VIDEO_TRACE_MAX_REQUESTS:-32}'"
         "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_SAMPLE_KEY='${VERL_OMNI_VIDEO_TRACE_SAMPLE_KEY:-}'"
         "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_STAGE='${VERL_OMNI_VIDEO_TRACE_STAGE:-boundary}'"
+        "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_DEVICE_SAMPLE='${VERL_OMNI_VIDEO_TRACE_DEVICE_SAMPLE:-0}'"
         "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_MODE='${VERL_OMNI_VIDEO_TRACE_MODE:-metadata}'"
         "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_MAX_BYTES='${VERL_OMNI_VIDEO_TRACE_MAX_BYTES:-8388608}'"
         "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_MAX_TOKENS='${VERL_OMNI_VIDEO_TRACE_MAX_TOKENS:-32768}'"

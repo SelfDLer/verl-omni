@@ -109,6 +109,76 @@ def test_same_sample_matches_across_different_routes_ids_and_log_order(tmp_path)
     assert report["single"]["routes"][0]["host"] != report["multi"]["routes"][0]["host"]
 
 
+def worker_record(records, event, **fields):
+    return {**records[0], "event": event, "seq": len(records), "worker_rank": 0, **fields}
+
+
+def test_worker_embedding_difference_precedes_engine_output_and_keeps_ranks_separate(tmp_path):
+    single, multi = request(), request("multi")
+    for records, content in ((single, b"good"), (multi, b"bad")):
+        records.append(
+            worker_record(
+                records,
+                "worker.model_input",
+                chunk_start=0,
+                chunk_tokens=10,
+                embedding=pixels(content),
+                positions=pixels(b"positions"),
+            )
+        )
+    report = compare(tmp_path, multi, single)
+    assert report["first_observed_difference"]["stage"].startswith("worker.model_input")
+    assert report["first_observed_difference"]["component"] == "embedding"
+    assert any(
+        row["components"]["prompt"]["status"] == "unknown"
+        for row in report["stages"]
+        if row["stage"].startswith("worker.receive")
+    )
+    multi[-1]["worker_rank"] = 1
+    report = compare(tmp_path, multi, single)
+    assert report["first_observed_difference"] is None
+
+
+def test_worker_registration_without_coverage_and_different_chunking_are_unknown(tmp_path):
+    single, multi = request(), request("multi")
+    for records in (single, multi):
+        records.append(worker_record(records, "trace.worker_registration", status="sent"))
+    report = compare(tmp_path, multi, single)
+    assert any(row["stage"].startswith("worker.receive") for row in report["stages"])
+    for records, count in ((single, 10), (multi, 5)):
+        records.append(
+            worker_record(records, "worker.model_input", chunk_start=0, chunk_tokens=count, embedding=pixels())
+        )
+    report = compare(tmp_path, multi, single)
+    assert report["first_observed_difference"] is None
+    assert all(
+        row["components"]["embedding"]["status"] == "unknown"
+        for row in report["stages"]
+        if row["stage"].startswith("worker.model_input")
+    )
+
+
+def test_worker_audio_difference_and_frontend_position_difference_are_visible(tmp_path):
+    single, multi = request(), request("multi")
+    for records, value in ((single, b"audio1"), (multi, b"audio2")):
+        records.append(
+            worker_record(
+                records,
+                "worker.receive",
+                prompt_token_snapshot=tokens([1]),
+                sampling_params={"seed": None},
+                multimodal_features=[{"modality": "audio", "data": pixels(value)}],
+            )
+        )
+    report = compare(tmp_path, multi, single)
+    assert report["first_observed_difference"]["component"] == "multimodal_features"
+    for records, offset in ((single, 5), (multi, 6)):
+        row = next(r for r in records if r["event"] == "frontend.build.features")
+        row["multimodal_features"] = [{"modality": "video", "data": pixels(), "position": {"offset": offset}}]
+    report = compare(tmp_path, multi, single)
+    assert report["first_observed_difference"] == {"stage": "frontend.build.features", "component": "multimodal"}
+
+
 def test_video_first_changes_inside_frontend_while_prompt_remains_equal(tmp_path):
     multi = request("multi")
     next(row for row in multi if row["event"] == "frontend.tokens.before")["video"][0][0] = pixels(b"other video")

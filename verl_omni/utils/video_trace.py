@@ -470,6 +470,7 @@ def prompt(name, value, **fields):
             token_fields={"prompt_token_snapshot": ids},
             prompt_tokens=len(ids) if ids is not None else None,
             video=data.get("video"),
+            audio=data.get("audio"),
             mm_uuids=value.get("multi_modal_uuids"),
             mm_processor_kwargs=value.get("mm_processor_kwargs"),
             **fields,

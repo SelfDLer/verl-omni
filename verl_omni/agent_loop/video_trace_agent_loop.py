@@ -36,7 +36,7 @@ class _ObservedClient:
                 "agent.dispatch",
                 {
                     "prompt_ids": kwargs.get("prompt_ids"),
-                    "multi_modal_data": {"video": kwargs.get("video_data")},
+                    "multi_modal_data": {"video": kwargs.get("video_data"), "audio": kwargs.get("audio_data")},
                     "mm_processor_kwargs": kwargs.get("mm_processor_kwargs"),
                 },
                 sampling_params=trace.sampling(kwargs.get("sampling_params")),

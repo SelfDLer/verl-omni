@@ -137,6 +137,17 @@ class vLLMOmniColocateWorkerExtension(CustomPipelineWorkerExtension):
         standard = self._get_standard_weight_model_and_config()
         if standard is not None and _is_moe_engine(standard[0]):
             patch_vllm_moe_model_weight_loader(standard[0])
+        from verl_omni.utils.video_trace_worker import install
+
+        install(self)
+
+    def register_video_trace(self, request_id, context):
+        from verl_omni.utils.video_trace_worker import install
+
+        install(self)
+        observer = getattr(self, "_video_observer", None)
+        if observer is not None:
+            observer.register(request_id, context)
 
     def update_weights_from_ipc(
         self,

@@ -377,7 +377,7 @@ class vLLMOmniHttpServer(vLLMHttpServer):
                 "server.receive",
                 {
                     "prompt_ids": prompt_ids,
-                    "multi_modal_data": {"video": video_data},
+                    "multi_modal_data": {"video": video_data, "audio": audio_data},
                     "mm_processor_kwargs": mm_processor_kwargs,
                 },
                 sampling_params=trace.sampling(sampling_params),

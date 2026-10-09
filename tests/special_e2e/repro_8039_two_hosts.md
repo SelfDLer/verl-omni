@@ -181,7 +181,8 @@ NNODES=2 AGENT_NUM_WORKERS=8 VAL_MAX_SAMPLES=32 \
 | `MODE=sample` | 仅从 CPU 数组按逻辑 C 顺序等间隔取至多 256 个元素，后台计算 `sample_sha256`。不同可证明采样内容不同，相同不能证明全部内容相同。 |
 | `MODE=full` | 仅复制 CPU 数组的完整字节，在后台计算 `sha256`。默认单数组上限 8 MiB，超过时记录 `skipped_byte_limit`，可通过 `VERL_OMNI_VIDEO_TRACE_MAX_BYTES` 调整。 |
 
-所有模式都不读取 NPU/GPU 内容，不调用 `.cpu()`、设备同步或设备归约。
+默认所有模式都不读取 NPU/GPU 内容，不调用 `.cpu()`、设备同步或设备归约。
+第 8 节的 `worker + DEVICE_SAMPLE=1` 是需要显式开启的例外。
 设备数组只记录 metadata；需要内容摘要时标记 `skipped_non_cpu`。
 `full` 仍有调用线程上的 CPU 拷贝成本，仅在需要确认具体少量样本时使用。
 `capture_ns` 记录每次捕获开销，不能代表观测对整个并发调度的总影响。
@@ -325,8 +326,65 @@ python tests/special_e2e/compare_8039_request.py \
 缺失事件或日志丢弃不能推断为业务未执行；两机时钟不用于确定先后。
 
 首次观测差异不是根因结论。随机采样本身就可能让 response 不同；只有在上游内容已核实一致后，
-才能将调查范围继续缩向后续阶段。此工具不读取音频内容，也未覆盖 worker 缓存恢复、视觉编码器、
-权重和 logits；前端一致不能证明模型实际收到的全部输入一致。
+才能将调查范围继续缩向后续阶段。仅有 boundary/frontend 记录时，尚未覆盖 worker 和模型输入。
+第 8 节补充视频/音频特征及 worker 观测；权重和 logits 仍未覆盖。
+
+## 8. 前端一致之后：worker、音频/视频占位与模型输入
+
+针对 `6806999702_8` 这类“前端抽样一致，但双机回答似乎只依据音频”的情况，使用新增 `worker` 模式。
+它包含 frontend 观测，并在 worker 启动后仅包装该 runner 实例的方法，不包装模型 forward，不改全局类。
+接口按本仓库固定的 vLLM 0.28.0、vLLM-Omni 和 vLLM-Ascend 版本核对；实际安装版本不支持的接口会记录
+`trace.install: unavailable`，不能当成该阶段通过。本地 CPU 回归不能替代真实 NPU 验证。
+
+保持两边相同的固定 256 条验证文件和原有 batch/并发设置，只筛选观测对象，不把验证集缩成一道题：
+
+```bash
+export VERL_OMNI_VIDEO_TRACE_SAMPLE_KEY=6806999702_8
+export VERL_OMNI_VIDEO_TRACE_STAGE=worker
+export VERL_OMNI_VIDEO_TRACE_MODE=sample
+export VERL_OMNI_VIDEO_TRACE_DEVICE_SAMPLE=0
+
+# 双机：使用原有 MODEL_PATH/TRAIN_FILE/VAL_FILE/RAY_ADDRESS。
+VERL_OMNI_VIDEO_TRACE_DIR=/mnt/share/8039-worker-multi \
+NNODES=2 VAL_MAX_SAMPLES=256 \
+  bash tests/special_e2e/run_8039_nextqa_two_hosts.sh
+```
+
+单机用对应的单节点 Ray 集群，`NNODES=1`，目录改成 `/mnt/share/8039-worker-single`；其余实验条件保持一致。
+每次用新目录。共享目录可以使用，文件名包含 host/pid/随机标识；非共享目录则收齐两台机器所有进程的文件。
+仍使用第 7 节的 `compare_8039_request.py` 命令，无需新的分析工具。
+
+| 事件 | 新增证据 | 不能据此声称什么 |
+| --- | --- | --- |
+| `frontend.*.features` | `multimodal_features` 中每个视频/音频的索引、占位 offset/length/is_embed、内容及缓存标识 | 前端数据存在不代表 worker 已使用 |
+| `worker.receive` | 调度器送到 worker 的恢复后特征、真实 prompt tokens、采样参数、有效 model seed、软件版本及并行配置 | 不直接观测 EngineCore 内部缓存恢复动作；路径/版本一致不代表运行时权重一致 |
+| `worker.encoder.write` | 实际写入编码缓存的输出、对应 modality/feature_index | 缓存命中时没有 write 是正常情况；不是视觉编码器内部逐层 dump |
+| `worker.encoder.read` | 合并前实际读取的缓存项、是否存在及 embedding | 只记录 cache-present 或 shape 不能证明内容正确 |
+| `worker.gather` | 该请求当前 prefill 区间的实际多模态 mask、batch offset | batch offset 不同是正常调度差异；mask 本身不区分音频/视频，要结合 feature_index/占位区间 |
+| `worker.model_input` | runner 预处理返回、进入模型执行前的该请求 embedding 与 positions 切片 | 不证明模型注意力实际利用了视频，也不覆盖 logits |
+
+先检查 `trace.worker_registration` 和 `trace.install`。仅对选定请求额外发送一次诊断 RPC，传递标量上下文，
+不修改生成参数或请求 ID。worker 用 Omni 自带的 `global_request_id` 精确关联，保留实际 EngineCore ID；
+找不到该字段时不会猜测 UUID 后缀。`trace.worker_unmatched`、注册失败或缺失 worker 事件都表示覆盖不足。
+worker 日志仍带同一 sample_key/trace_id，所以比较器会一起收集，不按两机墙钟或日志行号配对。
+
+`DEVICE_SAMPLE=0` 时设备 embedding/positions 只有元信息，比较应为 `unknown`。要进一步比较内容，
+两边均改成 `VERL_OMNI_VIDEO_TRACE_DEVICE_SAMPLE=1`，其余条件不变再跑一次。
+该选项只在选定样本的 worker 观测位置对每个设备张量抽取最多 256 个逻辑元素并复制到 CPU，
+**会增加设备读取、同步及诊断 RPC 开销，可能改变调度时序**；不宣称零扰动。
+它不复制整幅视频/整个模型，不读取模型权重，不更改 RNG、采样参数、缓存或奖励逻辑。
+每请求每 worker 最多记录 32 个 prefill 区间、256 个观测事件；达到上限会记录 `trace.worker_*limit`，
+不能将缺少后续事件解释为“没有视频”。后台队列满、摘要跳过和版本接口缺失同样不能当成相等。
+
+比较表新增 worker 阶段，按 worker rank、精确的 chunk_start/chunk_tokens 和 feature_index 对齐。
+两边 chunk 切分不同、重复调用或 worker rank 缺失会标 `unknown`，不强行配对。
+`worker_runtime` 在 comparison.json 中保留实际 seed 和版本，Markdown 也列出有效 seed；
+这些配置差异是线索，不自动认定为内容损坏。特别是 request seed=null 时，replica 的有效 seed 仍可能不同。
+
+判断顺序：恢复后特征是否先变化 → 编码缓存读写是否变化 → mask/占位是否异常 → 最终 embedding/positions 是否变化。
+如果这些可观测内容都一致，调查范围才继续移向权重、模型计算和采样；`sample_equal` 仍只是抽样一致。
+只在另做的控制实验中同时设置两边 `actor_rollout_ref.rollout.val_kwargs.temperature=0.0`，
+保留原始随机采样实验作为对照；不要让排查脚本偷偷改变原实验。
 
 ## 本地检查
 
