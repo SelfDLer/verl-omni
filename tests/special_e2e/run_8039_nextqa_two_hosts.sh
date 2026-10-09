@@ -52,6 +52,11 @@ if [[ -n ${VERL_OMNI_VIDEO_TRACE_DIR:-} ]]; then
     command+=(
         "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_DIR='${VERL_OMNI_VIDEO_TRACE_DIR}'"
         "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_MAX_REQUESTS='${VERL_OMNI_VIDEO_TRACE_MAX_REQUESTS:-32}'"
+        "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_STAGE='${VERL_OMNI_VIDEO_TRACE_STAGE:-boundary}'"
+        "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_MODE='${VERL_OMNI_VIDEO_TRACE_MODE:-metadata}'"
+        "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_MAX_BYTES='${VERL_OMNI_VIDEO_TRACE_MAX_BYTES:-8388608}'"
+        "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_MAX_TOKENS='${VERL_OMNI_VIDEO_TRACE_MAX_TOKENS:-32768}'"
+        actor_rollout_ref.rollout.agent.default_agent_loop=video_trace_single_turn_agent
     )
 fi
 # Extra Hydra overrides are intentionally last, as in the underlying recipe.

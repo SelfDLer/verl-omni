@@ -30,7 +30,7 @@ from vllm_omni.lora.request import LoRARequest
 
 from verl_omni.pipelines.model_base import OmniRolloutPipelineBase
 from verl_omni.pipelines.rollout_request import OmniRolloutRequest
-from verl_omni.utils.video_trace import trace_prompt
+from verl_omni.utils import video_trace as trace
 from verl_omni.workers.config import OmniModelConfig
 from verl_omni.workers.rollout.vllm_rollout.vllm_omni_strategy_base import OmniStrategyBase
 
@@ -350,7 +350,14 @@ class ARStrategy(OmniStrategyBase):
         )
         if self._rollout_output_modalities is not None:
             generate_kwargs["output_modalities"] = self._rollout_output_modalities
-        trace_prompt("strategy.engine_submit", prompt)
+        if trace.enabled():
+            policy_params = params[self._policy_stage_index] if isinstance(params, list) else params
+            trace.prompt(
+                "strategy.submit",
+                prompt,
+                max_tokens=getattr(policy_params, "max_tokens", None),
+                sampling_params=trace.sampling(policy_params),
+            )
         generator = self.server.engine.generate(**generate_kwargs)
         if self._rollout_output_modalities is None:
             return await self._collect_last_output(generator)
@@ -385,6 +392,7 @@ class ARStrategy(OmniStrategyBase):
         if not req_output.outputs:
             raise RuntimeError("AR mode expects outputs with token IDs, but got None or empty.")
 
+        trace.output("strategy.result", req_output.outputs[0])
         extra_fields = {"global_steps": self.server.global_steps}
         extra_fields.update(rollout_fields)
 

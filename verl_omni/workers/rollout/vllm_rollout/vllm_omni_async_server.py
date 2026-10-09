@@ -39,8 +39,9 @@ from vllm_omni.entrypoints import AsyncOmni
 from vllm_omni.entrypoints.openai.api_server import omni_init_app_state
 from vllm_omni.lora.request import LoRARequest
 
+from verl_omni.utils import video_trace as trace
 from verl_omni.utils.net_utils import get_non_ephemeral_free_port
-from verl_omni.utils.video_trace import install_frontend_hooks, trace_generate
+from verl_omni.utils.video_trace_frontend import install as install_video_frontend_trace
 from verl_omni.workers.config import DiffusionModelConfig, DiffusionRolloutConfig, OmniModelConfig
 from verl_omni.workers.rollout.base import get_rollout_sequence_parallel_size, get_rollout_world_size
 from verl_omni.workers.rollout.replica import DiffusionOutput
@@ -200,8 +201,8 @@ class vLLMOmniHttpServer(vLLMHttpServer):
                 attn_backend,
             )
 
-        install_frontend_hooks()
         engine_client = AsyncOmni(**engine_args)
+        install_video_frontend_trace(engine_client)
         app = build_app(args)
         await omni_init_app_state(engine_client, app.state, args)
 
@@ -349,7 +350,6 @@ class vLLMOmniHttpServer(vLLMHttpServer):
     # Generation delegates mode-specific behavior to the selected strategy.
     # -----------------------------------------------------------------------
 
-    @trace_generate("server.receive")
     async def generate(
         self,
         prompt_ids: list[int],
@@ -364,21 +364,40 @@ class vLLMOmniHttpServer(vLLMHttpServer):
         extra_prompt_ids: Optional[dict[str, list[int]]] = None,
         negative_extra_prompt_ids: Optional[dict[str, list[int]]] = None,
         priority: int = 0,
+        video_trace_context: Optional[dict[str, Any]] = None,
     ) -> DiffusionOutput | TokenOutput:
-        return await self._generate_strategy.generate(
-            prompt_ids=prompt_ids,
-            sampling_params=sampling_params,
+        with trace.scope(
+            "server",
+            incoming=video_trace_context,
             request_id=request_id,
-            image_data=image_data,
-            video_data=video_data,
-            audio_data=audio_data,
-            mm_processor_kwargs=mm_processor_kwargs,
-            negative_prompt_ids=negative_prompt_ids,
-            prompt_mask=prompt_mask,
-            extra_prompt_ids=extra_prompt_ids,
-            negative_extra_prompt_ids=negative_extra_prompt_ids,
-            priority=priority,
-        )
+            replica_rank=getattr(self, "replica_rank", None),
+            node_rank=getattr(self, "node_rank", None),
+        ):
+            trace.prompt(
+                "server.receive",
+                {
+                    "prompt_ids": prompt_ids,
+                    "multi_modal_data": {"video": video_data},
+                    "mm_processor_kwargs": mm_processor_kwargs,
+                },
+                sampling_params=trace.sampling(sampling_params),
+            )
+            result = await self._generate_strategy.generate(
+                prompt_ids=prompt_ids,
+                sampling_params=sampling_params,
+                request_id=request_id,
+                image_data=image_data,
+                video_data=video_data,
+                audio_data=audio_data,
+                mm_processor_kwargs=mm_processor_kwargs,
+                negative_prompt_ids=negative_prompt_ids,
+                prompt_mask=prompt_mask,
+                extra_prompt_ids=extra_prompt_ids,
+                negative_extra_prompt_ids=negative_extra_prompt_ids,
+                priority=priority,
+            )
+            trace.output("server.result", result)
+            return result
 
     # -----------------------------------------------------------------------
     # Shared LoRA state

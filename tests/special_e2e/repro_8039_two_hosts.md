@@ -114,6 +114,16 @@ NNODES=1 AGENT_NUM_WORKERS=8 VAL_MAX_SAMPLES=32 \
 需稳定比较准确率时，三种拓扑都改 `VAL_MAX_SAMPLES=256`，使用完全相同的数据子集。
 不要期待 32 条的准确率恰好等于 issue 的 0.73 或 0.41；样本数量和随机采样都会影响它。
 
+`data.val_batch_size=1` 不能单独作为“只降低并发”的对照。本地参考版 verl 的
+`GlobalRequestLoadBalancer.acquire_server` 在 `full_determinism=false` 且负载相同时
+选择 `candidates[0]`；若每次新请求到达前上一请求已释放，串行请求会集中到首个副本。
+实际运行需核对所安装 verl 的实现，并用新版 `server.receive` 的 `host`、`replica_rank`
+和 `request_id` 统计路由；`AGENT_NUM_WORKERS=8` 不保证 8 个推理副本均收到请求。
+即使串行时仍异常，也不能排除跨请求缓存或状态残留。此时先检查已有
+`validation/0.jsonl` 的 `output`、`gts`、`score`：当前 choice reward 精确比较首个
+`<answer>...</answer>` 的内容，格式不符也会得零分。结合实际路由区分副本差异、
+输出格式异常与视频内容变化，再选择下一轮对照。文件按随机 uid 排序，行号不是请求时序。
+
 脚本允许追加 Hydra override。例如单独验证是否仅在关闭多模态缓存后恢复：
 
 ```bash
@@ -138,75 +148,125 @@ NNODES=2 bash tests/special_e2e/run_8039_nextqa_two_hosts.sh \
 如果入口已经相同，先查样本选择/载荷构造；如果入口各异而同一批 fresh 特征坍缩成相同数据，
 才接近 issue 描述。正常 `data=None` 缓存命中本身不是失败。
 
-## 6. 开启视频观测点
+## 6. 新版观测：先验证低干扰边界，再开启内容摘要
 
-两台机器使用包含本次观测代码的同一版本、同一路径；确保 Python 导入的是该 checkout
-（例如已在各自环境执行 `pip install -e . --no-deps`）。保留原有模型、缓存和并发配置，
-在 Head 执行原来的启动命令，加上以下环境变量即可：
+旧版全局 monkey patch、generate 装饰器、同步文件写入及自动设备到 CPU 拷贝已移除。
+新版并未在真实双机 NPU 上验证，因此先确认开启 `boundary + metadata` 后仍能完成验证，
+且空输出数量与关闭观测时相符，再开启下一层。此前旧版开启后报错的日志不能直接当作原问题证据。
+
+两台机器同步代码并重启本次 validation 作业。保持模型、缓存、采样及并发设置不变，在 Head 执行：
 
 ```bash
-export VERL_OMNI_VIDEO_TRACE_DIR=./tmp/8039-video-trace/run01
-export VERL_OMNI_VIDEO_TRACE_MAX_REQUESTS=0
+export VERL_OMNI_VIDEO_TRACE_DIR=./tmp/8039-video-trace/v2-boundary
+export VERL_OMNI_VIDEO_TRACE_STAGE=boundary
+export VERL_OMNI_VIDEO_TRACE_MODE=metadata
+export VERL_OMNI_VIDEO_TRACE_MAX_REQUESTS=32
 NNODES=2 AGENT_NUM_WORKERS=8 VAL_MAX_SAMPLES=32 \
   bash tests/special_e2e/run_8039_nextqa_two_hosts.sh
 ```
 
-包装脚本通过 Ray `runtime_env.env_vars` 将这两个变量传到两台机器的新 actor，
-可用于已经启动的 Ray 集群；需要重新启动 validation 作业。默认不开启观测。
-`MAX_REQUESTS` 默认每进程记录前 32 次入口调用，`0` 为不限量；首次排查用 32 个样本配合 `0`，
-避免各进程独立限额造成链路缺失。再次实验请换 `run02` 等目录。
+包装脚本将变量传到远端新 actor，并显式选择 `video_trace_single_turn_agent`。
+这个诊断类继承原来的 `single_turn_agent`，仅代理本实例的客户端调用和记录合并边界，
+不修改上游客户端类。它用于本配方的 thinker 单轮路径，不替代 Talker 或其他自定义 agent。
+原始配方脚本直接启动时，需额外传入相同的 Ray env overrides 和
+`actor_rollout_ref.rollout.agent.default_agent_loop=video_trace_single_turn_agent`。
+只 export driver 环境变量不保证远端 actor 收到。两端必须使用新版 server，
+其新增的可选 `video_trace_context` 参数仅用于观测关联，不传给引擎。
 
-直接运行原始 `run_qwen3_omni_thinker_gspo_npu_nextqa_v1.sh` 时，需手动追加相同的
-Ray override（只在 driver 中 `export` 不保证现有集群的远端 actor 收到）：
+| 阶段/模式 | 行为 |
+| --- | --- |
+| `STAGE=boundary`（默认） | 显式记录 agent/server/strategy 输入和输出，不包装 vLLM 内部方法。 |
+| `STAGE=frontend` | 在真实引擎初始化后，仅包装当前 engine/input processor/preprocessor 实例；不修改它们的类、HF 转换器或全局缓存类。 |
+| `MODE=metadata`（默认） | 视频/特征只读取 shape、dtype、device、stride 等；文本及 CPU token 快照另行记录。不能用此模式证明视频内容相同。 |
+| `MODE=sample` | 仅从 CPU 数组按逻辑 C 顺序等间隔取至多 256 个元素，后台计算 `sample_sha256`。不同可证明采样内容不同，相同不能证明全部内容相同。 |
+| `MODE=full` | 仅复制 CPU 数组的完整字节，在后台计算 `sha256`。默认单数组上限 8 MiB，超过时记录 `skipped_byte_limit`，可通过 `VERL_OMNI_VIDEO_TRACE_MAX_BYTES` 调整。 |
+
+所有模式都不读取 NPU/GPU 内容，不调用 `.cpu()`、设备同步或设备归约。
+设备数组只记录 metadata；需要内容摘要时标记 `skipped_non_cpu`。
+`full` 仍有调用线程上的 CPU 拷贝成本，仅在需要确认具体少量样本时使用。
+`capture_ns` 记录每次捕获开销，不能代表观测对整个并发调度的总影响。
+
+格式观测在上述三种模式中都启用：只复制已有 Python 整数列表，不调用 tokenizer、processor
+或设备计算。`VERL_OMNI_VIDEO_TRACE_MAX_TOKENS` 默认 32768，限制每个 token 快照；
+超限记录 `skipped_token_limit`，设为 0 则关闭 token 内容快照。完整快照记录小端 int64 字节的
+SHA256、token 数及全部 IDs，供离线使用同一模型的 tokenizer 解码。文本最多检查前 65536
+字符，记录摘要和首尾各 512 字符；超限明确标记 `complete=false`，不能据此判定没有标签。
+token 和文本快照也计入后台队列的内存预算。运行中的观测不执行解码。
+
+建议逐步运行，每轮换目录：
+
+1. `boundary + metadata`：先定位空响应在哪一段产生，并与关闭观测的运行比较。
+2. `boundary + sample`：比较 agent → server → strategy 的原始视频采样摘要。
+3. `frontend + sample`：细分 strategy → engine build → input processor → token preprocessor。
+4. 仅在疑似变化区间对少量请求使用 `full` 确认；不要把原始 frames 与处理后 pixels 的 hash 直接比较。
+
+`MAX_REQUESTS` 默认每进程前 32 个根调用，`0` 表示不限。诊断 agent 将是否采样的决定一并传给
+server，避免同一请求在不同进程被独立限额截断。应保留相同采样参数，不因诊断改变模型输入。
+
+日志名为 `video-v2-<hostname>-<pid>-<随机ID>.jsonl`。推荐先写两台机器各自的本地绝对路径，
+结束后合并收集；共享目录也支持，各进程使用独立文件。所有文件操作及 SHA256 计算由后台线程完成。
+队列最多 128 条记录、64 MiB 待处理指纹字节；写盘慢或队列满时丢弃观测，不等待写盘。
+普通记录中的 `dropped_events` 和 `trace.health` 会报告丢弃数量；
+写入失败由后台输出 `Video trace writer failed`。有丢弃、写入错误或强制终止时日志不完整，
+不能根据缺失事件推断调用未发生。正常退出最多等待一秒排空，不保证硬杀进程时尾部日志完整。
+
+| 事件 | 观测位置 |
+| --- | --- |
+| `agent.begin` / `agent.output` | 数据集 uid、session、sample index；最终 response_ids 和 response_mask 长度。 |
+| `agent.source.message` / `agent.template.message` | 原始消息与实际传入模板构建器的角色、文本摘要和格式标记；不遍历媒体数据。 |
+| `agent.template.config` / `agent.prompt` | tokenizer 名称/类型、模板摘要、EOS/PAD ID、长度配置，以及模板构建后真正的 prompt token。 |
+| `agent.dispatch` / `agent.result` | 调用真实客户端前的原始视频，以及客户端返回的 token 数/停止原因。 |
+| `server.receive` / `server.result` | 实际 engine request ID、replica/node rank、接收视频、返回 token 数。 |
+| `strategy.submit` / `strategy.result` | adapter 后的 prompt、实际生成参数（含 stop/EOS/长度），原始 completion token、文本摘要和 finish_reason。 |
+| `agent.merge.before/after` | Continuous Token 合并前的 assistant token 数、合并后 mask 长度；结合 agent.output 判断最终截断。 |
+| `frontend.build.before/after` | 构建引擎请求前后原始视频。 |
+| `frontend.uuids.before/after` | 当前 stage/replica 的 UUID scoping。单 replica 不走此分支时可能没有事件。 |
+| `frontend.input.before/after` / `frontend.tokens.before/after` | 引擎 input processor / token preprocessor 入口、返回。 |
+| `frontend.*.features` | 返回的 video kwargs/hash/feature 标识；可能包含缓存协议正常省略的 None。 |
+| `frontend.*.result` | 方法实际返回的 prompt token；与 `.after` 对入参的观察分开。 |
+| `trace.install` | frontend 实例方法的 installed/unavailable；仅 installed 不能证明该请求经过此方法。 |
+
+按 `trace_id` 关联一个 agent 调用，`call_id` 关联其中一次客户端 generate；
+它们通过显式 RPC 元数据传递，因此不会受客户端重写 request ID 影响。
+同一客户端调用的 resume 请求共享 call_id，server 的 request_id 区分实际引擎请求。
+`uid` 可对上 `_run_prompt` 的报错，进程内顺序看 `seq`，不要只靠跨主机时间排序。
+`object_id` 只在本进程内有意义，不是内容标识。
+`extra_info.problem_id`、video_id 和 qid 可用时也随请求传播，用于跨运行定位同一数据样本。
+
+对于 `rm_scores[-1]` 越界，依次看 `strategy.result.token_ids_count`、
+`server.result.token_ids_count`、`agent.result.token_ids_count`、
+`agent.merge.after.response_mask_count`、`agent.output.response_mask_count`，
+找第一处变为零的位置。埋点不会填充 token、丢弃业务样本或抑制业务异常。
+
+格式异常报告由 `analyze_8039_trace.py` 生成，不读取奖励分数、不重新计分：
 
 ```bash
-bash examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_npu_nextqa_v1.sh \
-  "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_DIR='/tmp/8039-video-trace/run01'" \
-  "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_MAX_REQUESTS='0'"
+python tests/special_e2e/analyze_8039_trace.py /collected/head-trace /collected/worker-trace \
+  --tokenizer "$MODEL_PATH" \
+  --validation "$OUTPUT_DIR/validation/0.jsonl" > "$OUTPUT_DIR/format-trace-report.json"
 ```
 
-日志写入**每台机器本地**该目录下的 `video-<hostname>-<pid>-<session>.jsonl`，
-请收集两台的文件，或改用两台均可写的共享目录。每行包含事件、主机、PID、进程序号 `seq`、
-时间、请求 ID 和调用 `trace_id`；server 范围还带 `replica_rank`、`node_rank`。
-不要依靠跨主机时间戳排序，优先按请求映射和进程内 `seq` 判断顺序。
+脚本只加载本地 tokenizer 文件，不加载模型权重、不连接 Ray。`--validation` 可省略；
+提供时按本次运行的 uid/session 关联最终导出文本，不按行号或问题文本猜测对应关系。
+报告包含逐请求的阶段摘要、token 一致性、标签变化区间、实际停止原因与每个副本的异常计数：
 
-| 事件 | 用途 |
-| --- | --- |
-| `hook.install` | 检查 agent 和五个 frontend hook 的安装状态；`unavailable` 表示版本接口不匹配/缺依赖，不能当作该层没有异常。 |
-| `agent.send` → `agent.request_id` | 发送前视频摘要，以及 agent ID 到实际发给 server 的 `engine_request_id` 的映射。 |
-| `server.receive` → `strategy.engine_submit` | 接收的视频和完成 adapter 处理、提交给引擎的 prompt。 |
-| `engine.build.before/after` | 构建引擎请求前后的视频、metadata 和 UUID；保留外部 `request_id`，另记本层 `engine_request_id`。 |
-| `engine.scope_uuids.before/after` | stage/replica UUID scoping 前后，包含 `stage_id`、`replica_id`；只有引擎实际调用该路径才有记录。 |
-| `frontend.process_tokens.before/after` | token 预处理看到的原始视频；`frontend.processed` 记录返回的 video kwargs 和 mm hashes。 |
-| `frontend.hf_fresh` | `from_hf_inputs` 返回的本次新算 video 特征，包括 `pixel_values_videos` 和 grid。 |
-| `frontend.cache_merge.before/after` | 缓存命中 mask、mm hashes、缺失项的新特征，以及合并后的 video kwargs。 |
-| `engine.submission` | 送出前的 video feature 数据/标识，另记 `core_request_id`、`external_req_id` 供后续关联。 |
+- `prompt_answer_markers_lost`：源系统消息或前一 prompt 含答案标签标记，后续已解码 prompt 不再包含。
+- `engine_missing_answer_tags`：引擎原始 completion 解码后已经没有完整答案标签。
+- `answer_tags_lost`：输出链路中上一已观测阶段有标签，后续阶段没有，报告具体区间。
+- `empty_engine_tokens` / `engine_visible_empty`：区分真正的零 token 与移除特殊 token 后的空文本。
+- `engine_length_stop`：保留实际 token 数、max_tokens 与引擎的 length 停止原因。
+- `special_token_filter_removed_answer_tags` / `validation_text_changed`：区分特殊 token 过滤及最终导出文本变化。
 
-先确认真实请求的 `server.receive`、`engine.build.before`、`frontend.process_tokens.before`
-均有记录；仅有 `hook.install=installed` 不证明该运行路径执行过。agent hook 针对当前
-verl 的 `LLMServerClient`；其他客户端实现需补对应观测。若缺少 agent 事件，仍可从 server 开始定位，
-但不能据此排除上游传输问题。
+提示词的 token 变化可能来自正常多模态占位展开，不能仅凭 hash 变化判定损坏；
+标签标记检查也不等于完整的提示词语义检查，报告保留首尾文本、模板摘要和原始快照供核对。
+一次请求有多个 resume 时，分别记录引擎尝试，不把单次部分输出与合并完成的答案直接比较。
+没有 tokenizer、快照超限、摘要不符、缺失事件或日志损坏时报告不完整；有丢弃事件时
+`coverage_complete=false`。局部收集不能证明其他机器或未采样请求正常。
+该报告给出最早可观察到异常的位置，不将“引擎原始输出缺标签”直接定性为视频串扰或模型内部根因。
 
-按 `agent.request_id.engine_request_id == server.receive.request_id` 连接 agent/server，
-再以 server 的 `request_id` 连接各层；`trace_id` 只标识本进程内的一次调用，不跨 RPC 传递。
-视频数组记录完整字节 SHA256、dtype、shape，metadata 按原结构记录，不保存视频像素和完整 prompt。
-`unsupported` 表示该类型没有可比较摘要，需要补适配，不能当成两个视频相同。
-
-判读时找**同一请求第一次发生变化的位置**：
-
-- agent 与 server 的 raw frame hash 不同：变化发生在这两个观测点之间。
-- server 与 strategy 不同：查看 adapter 的正常变换，确认是否意外替换视频。
-- strategy、engine build、UUID scoping、process_tokens 的 raw hash 应逐层核对；
-  如果某请求的视频变成另一请求的内容，变化前后的相邻观测点就是下一步排查范围。
-- raw 各异但 fresh 特征一致：结合 metadata、采样方式、grid 判断 processor 是否处理成相同视频。
-  原始 frames 与归一化/切块后的 pixels 是不同表示，不能直接比较两者的 hash。
-- fresh 与 merged 异常：按 `mm_is_cached` 和 `mm_hashes` 对齐；fresh/missing 列表仅包含未命中项，
-  其索引不一定等于完整视频列表索引。`None` 可能是缓存协议正常省略，不表示视频丢失。
-
-这些观测覆盖 frontend 至 engine submission，尚未检查模型 worker 收到的数据。
-若上述各层始终正确，下一步应在实际 worker 的缓存接收/视觉编码入口记录同样摘要。
-观测会同步读取完整数组；设备 tensor 会复制到 CPU，因此会增加耗时并可能改变竞争时序。
-开启观测后没出现异常不等于排除了串扰，也不代表本 CPU 测试复现了 #8039。
+本版不观察模型 worker 的 P1 缓存和视觉编码器，也不包装 fresh HF/缓存 merge 的全局静态方法。
+若 CPU 输入/处理后特征均正确，才需要再针对实际 worker 的接收/视觉编码入口补观测。
+当前测试验证观测的隔离、异常传递和写盘阻塞时的行为，不证明已经修复双机回归或复现 #8039。
 
 ## 本地检查
 
