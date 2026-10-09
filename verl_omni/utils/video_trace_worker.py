@@ -88,6 +88,8 @@ class WorkerObserver:
         self.requests = {}
         self.active = []
         self.hooks = {}
+        self.entered_hooks = set()
+        self.unmatched_count = 0
         self.rank = getattr(worker, "rank", None)
         self.local_rank = getattr(worker, "local_rank", None)
         self.runtime = {}
@@ -112,6 +114,19 @@ class WorkerObserver:
             self.pending.popitem(last=False)
             trace.event("trace.worker_registration_evicted", force=True)
         self.pending[request_id] = dict(context)
+        self.entered_hooks.clear()
+        self.unmatched_count = 0
+
+    def hook_enter(self, name):
+        if name not in self.entered_hooks:
+            self.entered_hooks.add(name)
+            trace.event(
+                "trace.worker_hook_enter",
+                force=True,
+                hook=name,
+                worker_rank=self.rank,
+                pending_request_ids=list(self.pending)[:8],
+            )
 
     def emit(self, entry, name, **fields):
         if entry["events"] >= 256:
@@ -139,10 +154,18 @@ class WorkerObserver:
             if context is None:
                 context = self.pending.pop(request.req_id, None)
             if context is None:
-                if self.pending and external_id is None:
+                if self.pending and self.unmatched_count < 64:
                     trace.event(
-                        "trace.worker_unmatched", force=True, core_request_id=request.req_id, global_id=external_id
+                        "trace.worker_unmatched",
+                        force=True,
+                        core_request_id=request.req_id,
+                        global_id=external_id,
+                        pending_request_ids=list(self.pending)[:8],
+                        worker_rank=self.rank,
                     )
+                elif self.unmatched_count == 64:
+                    trace.event("trace.worker_unmatched_limit", force=True, worker_rank=self.rank)
+                self.unmatched_count += 1
                 continue
             entry = {"id": request.req_id, "context": context, "events": 0, "chunks": 0}
             self.requests[request.req_id] = entry
@@ -266,9 +289,17 @@ class WorkerObserver:
             def observed(*args, **kwargs):
                 if not enabled() or not (self.pending or self.requests or self.active):
                     return original(*args, **kwargs)
+                self.safe(self.hook_enter, name)
                 try:
                     arguments = signature.bind(*args, **kwargs).arguments
-                except Exception:
+                except Exception as exc:
+                    trace.event(
+                        "trace.observation_error",
+                        force=True,
+                        boundary="worker." + name,
+                        operation="signature_bind",
+                        error=str(exc),
+                    )
                     return original(*args, **kwargs)
                 previous = self.active
                 if preprocess:
@@ -324,9 +355,11 @@ def register_worker(worker, request_id, context, trace_options=None):
         "host": socket.gethostname(),
         "pid": os.getpid(),
         "worker_rank": getattr(worker, "rank", None),
+        "registered_request_id": request_id,
         "trace_dir": os.environ.get("VERL_OMNI_VIDEO_TRACE_DIR", ""),
         "trace_stage": os.environ.get("VERL_OMNI_VIDEO_TRACE_STAGE", "boundary"),
         "device_sample": os.environ.get("VERL_OMNI_VIDEO_TRACE_DEVICE_SAMPLE", "0"),
+        "worker_cwd": os.getcwd(),
         "status": "disabled",
     }
     if not enabled():
@@ -354,6 +387,42 @@ async def register(server, request_id):
         replies = await server.collective_rpc(
             method="register_video_trace", timeout=10.0, args=(request_id, context), kwargs={"trace_options": options}
         )
-        trace.event("trace.worker_registration", status="returned", request_id=request_id, worker_replies=replies)
+        trace.event(
+            "trace.worker_registration", status="returned", registered_request_id=request_id, worker_replies=replies
+        )
     except Exception as exc:
         trace.event("trace.worker_registration", status="failed", error=str(exc))
+
+
+def install_client(server):
+    """Register the rewritten Omni ID immediately before engine admission."""
+    if not enabled():
+        return
+    boundary = "frontend.worker_admission"
+    try:
+        engine = server.engine.engine
+        original = engine.add_request_async
+        if getattr(original, "_video_trace_admission", False):
+            return
+        signature = inspect.signature(original)
+        if not inspect.iscoroutinefunction(original) or "request_id" not in signature.parameters:
+            raise TypeError(f"Unsupported add_request_async signature: {signature}")
+
+        @functools.wraps(original)
+        async def observed(*args, **kwargs):
+            if enabled() and trace.export_context().get("selected"):
+                try:
+                    actual_id = signature.bind(*args, **kwargs).arguments["request_id"]
+                    if not isinstance(actual_id, str) or not actual_id:
+                        raise TypeError("Engine admission request_id must be a nonempty string")
+                except Exception as exc:
+                    trace.event("trace.observation_error", boundary=boundary, error=str(exc))
+                else:
+                    await register(server, actual_id)
+            return await original(*args, **kwargs)
+
+        observed._video_trace_admission = True
+        engine.add_request_async = observed
+        trace.event("trace.install", force=True, boundary=boundary, status="installed", signature=str(signature))
+    except Exception as exc:
+        trace.event("trace.install", force=True, boundary=boundary, status="unavailable", error=str(exc))

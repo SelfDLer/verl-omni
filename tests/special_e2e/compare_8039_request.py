@@ -87,6 +87,8 @@ def load_request(paths, sample_key, trace_id=None):
                     worker_inventory[str(path)][row["event"]] += 1
                 if row.get("event") in {
                     "trace.worker_unmatched",
+                    "trace.worker_hook_enter",
+                    "trace.worker_unmatched_limit",
                     "trace.observation_error",
                     "trace.worker_registration_evicted",
                 }:
@@ -471,6 +473,9 @@ def _worker_coverage(side):
         "unmatched_target_requests": unmatched,
         "worker_file_inventory": side.get("worker_file_inventory", {}),
         "installation": installations,
+        "admission_installation": [
+            row for row in side.get("frontend_installation", []) if row.get("boundary") == "frontend.worker_admission"
+        ],
         "diagnostics_from_input_files": side.get("worker_diagnostics", []),
         "status": "worker_records_present" if counts else "no_worker_records_for_selected_trace",
         "note": "Installations and unscoped diagnostics describe input files, not necessarily this request's workers. "
@@ -514,6 +519,11 @@ def compare(left, right, tokenizer=None):
     deep = any(row.get("event", "").startswith("worker.") for side in (left, right) for row in side["records"])
     # Registration without worker records must still expose missing coverage.
     deep |= any(row.get("event") == "trace.worker_registration" for side in (left, right) for row in side["records"])
+    deep |= any(
+        row.get("boundary") == "frontend.worker_admission"
+        for side in (left, right)
+        for row in side.get("frontend_installation", [])
+    )
     if deep:
         index = next(i for i, row in enumerate(stages) if row["stage"] == "strategy.result")
         stages[index:index] = _worker_stages(left, right, tokenizer)
@@ -611,6 +621,8 @@ def markdown(report):
         coverage = report.get("worker_coverage", {}).get(side)
         if coverage:
             lines.append(f"- Worker coverage: `{coverage['status']}`; events: `{coverage['event_counts']}`")
+            for admission in coverage["admission_installation"]:
+                lines.append(f"- Worker admission hook: `{admission.get('status')}`; {admission.get('error', '')}")
             if not coverage["event_counts"]:
                 lines.append(
                     "- No worker payloads are available for this trace. "

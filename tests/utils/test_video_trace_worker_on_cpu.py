@@ -171,6 +171,25 @@ def test_no_guessed_uuid_matching_and_finished_cleanup(worker_module, trace):
     assert not worker._video_observer.requests
 
 
+def test_nonempty_mismatched_global_id_is_observable_and_bounded(worker_module, trace):
+    worker, scheduler, _ = setup(worker_module, trace)
+    target = scheduler.scheduled_new_reqs[1]
+    target.additional_information = {"global_request_id": ["different-external"]}
+    scheduler.scheduled_new_reqs = [target]
+    for _ in range(70):
+        worker.model_runner._update_states(scheduler)
+    records = rows(trace)
+    unmatched = [r for r in records if r["event"] == "trace.worker_unmatched"]
+    assert len(unmatched) == 64
+    assert unmatched[0]["global_id"] == "different-external"
+    assert unmatched[0]["pending_request_ids"] == ["external"]
+    assert unmatched[0]["core_request_id"] == "random-internal"
+    assert sum(r["event"] == "trace.worker_hook_enter" for r in records) == 1
+    assert sum(r["event"] == "trace.worker_unmatched_limit" for r in records) == 1
+    assert not worker._video_observer.requests
+    assert worker.model_runner.requests["random-internal"] is target
+
+
 def test_observation_failure_preserves_result_and_business_exception(worker_module, trace, monkeypatch):
     worker, scheduler, _ = setup(worker_module, trace)
     worker.model_runner._update_states(scheduler)
@@ -289,7 +308,10 @@ def test_registration_retains_worker_replies_in_server_trace(worker_module, trac
     assert record["worker_replies"][0][0]["status"] == "disabled"
 
 
-def test_actual_ar_generation_keeps_params_and_output_with_worker_registration(worker_module, trace, monkeypatch):
+@pytest.mark.parametrize("omni_suffix", ["", "-omni1234"])
+def test_actual_ar_generation_keeps_params_and_output_with_worker_registration(
+    worker_module, trace, monkeypatch, omni_suffix
+):
     monkeypatch.setitem(sys.modules, "verl_omni.utils.video_trace_worker", worker_module)
     path = helpers.ROOT / "verl_omni/workers/rollout/vllm_rollout/vllm_omni_ar_strategy.py"
     cls = next(
@@ -307,8 +329,27 @@ def test_actual_ar_generation_keeps_params_and_output_with_worker_registration(w
     calls = []
     completion = NS(token_ids=[10, 20])
     prompt, params = {"prompt_token_ids": [1, 2]}, NS(max_tokens=1024)
+    worker = NS(model_runner=Runner(), rank=0, local_rank=0)
+    worker_module.install(worker)
+
+    class AdmissionEngine:
+        async def add_request_async(self, request_id, prompt, sampling_params_list):
+            calls.append("admit")
+            assert prompt is expected_prompt
+            assert sampling_params_list is params
+            # AsyncOmni rewrites the external ID, and InputProcessor may
+            # append a second suffix. global_request_id retains the first.
+            core_id = request_id + "-core5678"
+            req = request(core_id, request_id, [feature("video", 0)])
+            scheduler = NS(scheduled_new_reqs=[req], num_scheduled_tokens={core_id: 3}, finished_req_ids=[])
+            worker.model_runner._update_states(scheduler)
+            worker.model_runner._preprocess(scheduler)
+
+    expected_prompt = prompt
 
     class Engine:
+        engine = AdmissionEngine()
+
         def generate(self, **kwargs):
             calls.append("generate")
             assert kwargs["prompt"] is prompt
@@ -316,6 +357,11 @@ def test_actual_ar_generation_keeps_params_and_output_with_worker_registration(w
             assert kwargs["request_id"] == "external"
 
             async def outputs():
+                await self.engine.add_request_async(
+                    request_id=kwargs["request_id"] + omni_suffix,
+                    prompt=kwargs["prompt"],
+                    sampling_params_list=kwargs["sampling_params_list"],
+                )
                 yield completion
 
             return outputs()
@@ -325,14 +371,98 @@ def test_actual_ar_generation_keeps_params_and_output_with_worker_registration(w
 
         async def collective_rpc(self, **kwargs):
             calls.append("register")
-            assert kwargs["args"][0] == "external"
             assert kwargs["args"][1]["sample_key"] == "6806999702_8"
+            return [worker_module.register_worker(worker, *kwargs["args"], **kwargs.get("kwargs", {}))]
 
     async def collect(generator):
         async for item in generator:
             return item
 
     strategy = NS(server=Server(), _rollout_output_modalities=None, _collect_last_output=collect)
+    worker_module.install_client(strategy.server)
     with trace.scope("agent", sample_key="6806999702_8"):
         assert asyncio.run(namespace["run_generation"](strategy, prompt, params, "external", None, 0)) is completion
-    assert calls == ["register", "generate"]
+    records = rows(trace)
+    received = next(r for r in records if r["event"] == "worker.receive")
+    assert received["global_id"] == "external" + omni_suffix
+    assert received["core_request_id"] == "external" + omni_suffix + "-core5678"
+    assert any(r["event"] == "worker.model_input" for r in records)
+    registered = next(r for r in records if r["event"] == "trace.worker_registration")
+    assert registered["registered_request_id"] == "external" + omni_suffix
+    assert calls == ["generate", "register", "admit"]
+
+
+def test_admission_hook_is_instance_local_and_preserves_concurrent_context(worker_module, trace):
+    admitted, registered = [], []
+
+    class Admission:
+        async def add_request_async(self, request_id, payload):
+            await asyncio.sleep(0)
+            admitted.append((request_id, payload))
+            if request_id == "business-error":
+                raise ValueError("original admission error")
+            return payload
+
+    class Server:
+        def __init__(self):
+            self.engine = NS(engine=Admission())
+
+        async def collective_rpc(self, **kwargs):
+            await asyncio.sleep(0)
+            request_id, context = kwargs["args"]
+            registered.append((request_id, context["sample_key"]))
+            return []
+
+    server, other = Server(), Server()
+    original_other = other.engine.engine.add_request_async
+    worker_module.install_client(server)
+    installed = server.engine.engine.add_request_async
+    worker_module.install_client(server)
+    assert installed is server.engine.engine.add_request_async
+    assert other.engine.engine.add_request_async == original_other
+
+    async def run(request_id, key, selected):
+        payload = object()
+        with trace.scope("agent", sample_key=key, selected=selected):
+            assert await installed(request_id, payload) is payload
+
+    async def together():
+        await asyncio.gather(
+            run("actual-1", "sample-1", True), run("actual-2", "sample-2", True), run("unselected", "sample-3", False)
+        )
+
+    asyncio.run(together())
+    assert set(registered) == {("actual-1", "sample-1"), ("actual-2", "sample-2")}
+    assert len(admitted) == 3
+    with pytest.raises(ValueError, match="original admission error"):
+        asyncio.run(run("business-error", "sample-1", True))
+
+
+def test_admission_registration_failure_preserves_business_output(worker_module, trace):
+    payload = object()
+
+    class Admission:
+        async def add_request_async(self, request_id):
+            assert request_id == "actual-internal-id"
+            return payload
+
+    class Server:
+        engine = NS(engine=Admission())
+
+        async def collective_rpc(self, **kwargs):
+            raise RuntimeError("diagnostic rpc unavailable")
+
+    server = Server()
+    worker_module.install_client(server)
+    with trace.scope("agent"):
+        assert asyncio.run(server.engine.engine.add_request_async("actual-internal-id")) is payload
+    assert next(r for r in rows(trace) if r["event"] == "trace.worker_registration")["status"] == "failed"
+
+
+def test_unsupported_admission_reports_unavailable_without_replacing_method(worker_module, trace):
+    admission = NS(add_request_async=lambda request_id: request_id)
+    original = admission.add_request_async
+    worker_module.install_client(NS(engine=NS(engine=admission)))
+    assert admission.add_request_async is original
+    record = next(r for r in rows(trace) if r.get("boundary") == "frontend.worker_admission")
+    assert record["status"] == "unavailable"

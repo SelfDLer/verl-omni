@@ -187,7 +187,7 @@ class _Writer:
         self.pid = os.getpid()
         self.host = socket.gethostname()
         self.run = uuid.uuid4().hex
-        self.path = Path(directory) / f"video-v2-{self.host}-{self.pid}-{self.run}.jsonl"
+        self.path = Path(directory).absolute() / f"video-v2-{self.host}-{self.pid}-{self.run}.jsonl"
         self.queue = queue.Queue(maxsize=128)
         self.lock = threading.Lock()
         self.pending_bytes = 0

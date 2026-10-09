@@ -228,6 +228,22 @@ def test_worker_acknowledgement_shows_disabled_environment_without_worker_files(
     assert "status `disabled`, stage `boundary`" in COMPARE["markdown"](report)
 
 
+def test_missing_admission_hook_is_reported_even_without_registration(tmp_path):
+    single, multi = request(), request("multi")
+    for records in (single, multi):
+        records.append(
+            {
+                "event": "trace.install",
+                "boundary": "frontend.worker_admission",
+                "status": "unavailable",
+                "error": "unsupported signature",
+            }
+        )
+    report = compare(tmp_path, multi, single)
+    assert "single" in report["worker_coverage"]
+    assert "Worker admission hook: `unavailable`; unsupported signature" in COMPARE["markdown"](report)
+
+
 def test_report_identifies_missing_files_and_exact_unmatched_target(tmp_path):
     single, multi = request(), request("multi")
     for records in (single, multi):

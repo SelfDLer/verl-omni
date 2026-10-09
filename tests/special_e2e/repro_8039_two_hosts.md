@@ -366,7 +366,11 @@ NNODES=2 VAL_MAX_SAMPLES=256 \
 先检查 `trace.worker_registration` 和 `trace.install`。仅对选定请求额外发送一次诊断 RPC，传递标量上下文及
 六个诊断设置（DIR/STAGE/MODE/DEVICE_SAMPLE/MAX_BYTES/MAX_TOKENS），不依赖子 worker 是否继承服务进程的环境。
 不修改生成参数或请求 ID。RPC 回传每个 worker 的启用状态、实际诊断配置、hook 安装结果和日志文件路径；
-`status=registered` 表示已登记观测上下文，不等于已匹配并采集请求。worker 用 Omni 自带的 `global_request_id` 精确关联，保留实际 EngineCore ID；
+`status=registered` 表示已登记观测上下文，不等于已匹配并采集请求。登记发生在实际 engine 的 `add_request_async`
+入口，晚于 `AsyncOmni.generate()` 的随机 ID 改写、早于入队。不要在 strategy 调用 generate 前登记原始 ID：
+`A` 会先变成 `A-<omni后缀>`，InputProcessor 还可能继续追加后缀；worker 的 `global_request_id` 对应前者，
+并非原始 `A`。回执中的 `registered_request_id` 显示真实登记值。
+worker 用 Omni 自带的 `global_request_id` 精确关联，保留实际 EngineCore ID；
 找不到该字段时不会猜测 UUID 后缀。`trace.worker_unmatched`、注册失败或缺失 worker 事件都表示覆盖不足。
 worker 日志仍带同一 sample_key/trace_id，所以比较器会一起收集，不按两机墙钟或日志行号配对。
 
@@ -408,6 +412,14 @@ Markdown 会直接显示每一项 unknown 的具体原因和两边的 worker cov
 旧版 `trace.worker_registration.status=sent` 只说明 RPC 返回，不能证明 worker 启用了观测。
 旧日志没有回执时，新比较器会明确注明，不推断其环境设置。若实际 worker 载荷根本没被采集，离线比较无法补回它；
 需要用修正后的注册链路重新采集。若只是遗漏文件，收齐文件后重新比较即可。
+
+`registered` 且五个 hook 都 `installed`，仍不能证明这些 hook 实际执行。
+新日志使用绝对文件路径，并在回执记录 `worker_cwd`；旧版相对路径应按对应 worker 的工作目录解释。
+`trace.install` 中的 `frontend.worker_admission` 表示登记入口已包装；接口不兼容会标记 unavailable，报告中仍显示 worker 覆盖缺口。
+优先检查注册回执中精确的 host/pid/文件名，而不是其他副本的安装记录总数。
+`trace.worker_hook_enter` 记录注册后每个 hook 的首次调用；`trace.worker_unmatched` 同时记录非空但不匹配的
+global ID 和等待关联的请求 ID（每次注册最多 64 条，超过后记录 limit）。未匹配的候选可能是同批其他请求，
+不能仅凭该事件判定目标请求异常，仍需用前端精确 core_request_id 核对。
 
 ## 本地检查
 

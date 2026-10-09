@@ -71,6 +71,22 @@ def test_disabled_does_not_start_thread_read_data_or_create_directory(trace, mon
     assert not list(tmp_path.iterdir())
 
 
+def test_relative_trace_path_is_anchored_when_writer_is_created(trace, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VERL_OMNI_VIDEO_TRACE_DIR", "capture")
+    trace.event("before", force=True)
+    path = trace._sink.path
+    assert path.is_absolute()
+    assert path.parent == tmp_path / "capture"
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.chdir(other)
+    trace.event("after", force=True)
+    assert {r["event"] for r in rows(trace)} >= {"before", "after"}
+    assert trace._sink.path == path
+    assert not (other / "capture").exists()
+
+
 def test_target_sample_records_only_matching_request_without_skipping_work(trace, monkeypatch):
     monkeypatch.setenv("VERL_OMNI_VIDEO_TRACE_SAMPLE_KEY", "video_question")
     monkeypatch.setenv("VERL_OMNI_VIDEO_TRACE_MAX_REQUESTS", "1")

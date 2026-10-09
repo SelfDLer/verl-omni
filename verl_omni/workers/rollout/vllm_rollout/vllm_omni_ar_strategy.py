@@ -363,10 +363,6 @@ class ARStrategy(OmniStrategyBase):
                 max_tokens=getattr(policy_params, "max_tokens", None),
                 sampling_params=trace.sampling(policy_params),
             )
-        if trace.enabled() and os.environ.get("VERL_OMNI_VIDEO_TRACE_STAGE") == "worker":
-            from verl_omni.utils.video_trace_worker import register
-
-            await register(self.server, request_id)
         generator = self.server.engine.generate(**generate_kwargs)
         if self._rollout_output_modalities is None:
             return await self._collect_last_output(generator)

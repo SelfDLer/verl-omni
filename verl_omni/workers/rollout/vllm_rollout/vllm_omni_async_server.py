@@ -213,6 +213,9 @@ class vLLMOmniHttpServer(vLLMHttpServer):
 
         self.engine = engine_client
         if isinstance(self._generate_strategy, ARStrategy):
+            from verl_omni.utils.video_trace_worker import install_client
+
+            install_client(self)
             # attach engine-level monkey patches
             await self.collective_rpc(method="monkey_patch_model")
         self._server_port, self._server_task = await run_uvicorn(app, args, self._server_address)
