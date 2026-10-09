@@ -30,6 +30,7 @@ from vllm_omni.lora.request import LoRARequest
 
 from verl_omni.pipelines.model_base import OmniRolloutPipelineBase
 from verl_omni.pipelines.rollout_request import OmniRolloutRequest
+from verl_omni.utils.video_trace import trace_prompt
 from verl_omni.workers.config import OmniModelConfig
 from verl_omni.workers.rollout.vllm_rollout.vllm_omni_strategy_base import OmniStrategyBase
 
@@ -349,6 +350,7 @@ class ARStrategy(OmniStrategyBase):
         )
         if self._rollout_output_modalities is not None:
             generate_kwargs["output_modalities"] = self._rollout_output_modalities
+        trace_prompt("strategy.engine_submit", prompt)
         generator = self.server.engine.generate(**generate_kwargs)
         if self._rollout_output_modalities is None:
             return await self._collect_last_output(generator)

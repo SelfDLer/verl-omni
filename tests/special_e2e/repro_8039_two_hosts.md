@@ -90,7 +90,7 @@ actor/FSDP 和真实 rollout 引擎，因此并不是轻量 CPU 测试。
 `use_audio_in_video=false`、`sampling_rate=16000`。
 不在首轮关闭多模态缓存、改 eager、使用随机小模型或缩成只有一个引擎副本。
 
-每次运行输出到独立的 `outputs/8039-nextqa-.../`，包含 `preflight.log`、
+每次运行输出到独立的 `outputs/debug/8039-nextqa-.../`，包含 `preflight.log`、
 `driver.log` 和 `validation/`。启动后核实日志中确实有 8 个 rollout 副本，
 每台 4 个，且 TP=4 的设备组不跨节点、同一台机器的不同 rollout 副本不重叠。
 保存两台机器本次 `/tmp/ray/session_latest/logs/` 中的 worker 日志。
@@ -130,14 +130,83 @@ NNODES=2 bash tests/special_e2e/run_8039_nextqa_two_hosts.sh \
 确认串扰要以同一个 request ID 对齐以下数据：
 
 1. server.generate 入口和 ARStrategy 准备完成的 prompt：原始 frames 的全量 SHA256、shape、metadata。
-2. AsyncOmni.generate 和 `_build_add_request_message`：同样的原始视频摘要及 UUID。
+2. 提交给 AsyncOmni 的 prompt 和 `_build_add_request_message`：同样的原始视频摘要及 UUID。
 3. `_process_tokens`：原始视频摘要；processor fresh 输出：`pixel_values_videos` 的全量 SHA256。
 
 每条日志带 hostname、PID、引擎副本和 request ID。对同一请求在不同阶段比较，
 不要只比较全局 mean/std，也不要把来自相同视频的多个问题误判为串扰。
 如果入口已经相同，先查样本选择/载荷构造；如果入口各异而同一批 fresh 特征坍缩成相同数据，
 才接近 issue 描述。正常 `data=None` 缓存命中本身不是失败。
-这个启动脚本没有额外安装这些哈希插桩；先保留真实引擎日志和生成结果，再据失败阶段加插桩。
+
+## 6. 开启视频观测点
+
+两台机器使用包含本次观测代码的同一版本、同一路径；确保 Python 导入的是该 checkout
+（例如已在各自环境执行 `pip install -e . --no-deps`）。保留原有模型、缓存和并发配置，
+在 Head 执行原来的启动命令，加上以下环境变量即可：
+
+```bash
+export VERL_OMNI_VIDEO_TRACE_DIR=./tmp/8039-video-trace/run01
+export VERL_OMNI_VIDEO_TRACE_MAX_REQUESTS=0
+NNODES=2 AGENT_NUM_WORKERS=8 VAL_MAX_SAMPLES=32 \
+  bash tests/special_e2e/run_8039_nextqa_two_hosts.sh
+```
+
+包装脚本通过 Ray `runtime_env.env_vars` 将这两个变量传到两台机器的新 actor，
+可用于已经启动的 Ray 集群；需要重新启动 validation 作业。默认不开启观测。
+`MAX_REQUESTS` 默认每进程记录前 32 次入口调用，`0` 为不限量；首次排查用 32 个样本配合 `0`，
+避免各进程独立限额造成链路缺失。再次实验请换 `run02` 等目录。
+
+直接运行原始 `run_qwen3_omni_thinker_gspo_npu_nextqa_v1.sh` 时，需手动追加相同的
+Ray override（只在 driver 中 `export` 不保证现有集群的远端 actor 收到）：
+
+```bash
+bash examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_npu_nextqa_v1.sh \
+  "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_DIR='/tmp/8039-video-trace/run01'" \
+  "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_MAX_REQUESTS='0'"
+```
+
+日志写入**每台机器本地**该目录下的 `video-<hostname>-<pid>-<session>.jsonl`，
+请收集两台的文件，或改用两台均可写的共享目录。每行包含事件、主机、PID、进程序号 `seq`、
+时间、请求 ID 和调用 `trace_id`；server 范围还带 `replica_rank`、`node_rank`。
+不要依靠跨主机时间戳排序，优先按请求映射和进程内 `seq` 判断顺序。
+
+| 事件 | 用途 |
+| --- | --- |
+| `hook.install` | 检查 agent 和五个 frontend hook 的安装状态；`unavailable` 表示版本接口不匹配/缺依赖，不能当作该层没有异常。 |
+| `agent.send` → `agent.request_id` | 发送前视频摘要，以及 agent ID 到实际发给 server 的 `engine_request_id` 的映射。 |
+| `server.receive` → `strategy.engine_submit` | 接收的视频和完成 adapter 处理、提交给引擎的 prompt。 |
+| `engine.build.before/after` | 构建引擎请求前后的视频、metadata 和 UUID；保留外部 `request_id`，另记本层 `engine_request_id`。 |
+| `engine.scope_uuids.before/after` | stage/replica UUID scoping 前后，包含 `stage_id`、`replica_id`；只有引擎实际调用该路径才有记录。 |
+| `frontend.process_tokens.before/after` | token 预处理看到的原始视频；`frontend.processed` 记录返回的 video kwargs 和 mm hashes。 |
+| `frontend.hf_fresh` | `from_hf_inputs` 返回的本次新算 video 特征，包括 `pixel_values_videos` 和 grid。 |
+| `frontend.cache_merge.before/after` | 缓存命中 mask、mm hashes、缺失项的新特征，以及合并后的 video kwargs。 |
+| `engine.submission` | 送出前的 video feature 数据/标识，另记 `core_request_id`、`external_req_id` 供后续关联。 |
+
+先确认真实请求的 `server.receive`、`engine.build.before`、`frontend.process_tokens.before`
+均有记录；仅有 `hook.install=installed` 不证明该运行路径执行过。agent hook 针对当前
+verl 的 `LLMServerClient`；其他客户端实现需补对应观测。若缺少 agent 事件，仍可从 server 开始定位，
+但不能据此排除上游传输问题。
+
+按 `agent.request_id.engine_request_id == server.receive.request_id` 连接 agent/server，
+再以 server 的 `request_id` 连接各层；`trace_id` 只标识本进程内的一次调用，不跨 RPC 传递。
+视频数组记录完整字节 SHA256、dtype、shape，metadata 按原结构记录，不保存视频像素和完整 prompt。
+`unsupported` 表示该类型没有可比较摘要，需要补适配，不能当成两个视频相同。
+
+判读时找**同一请求第一次发生变化的位置**：
+
+- agent 与 server 的 raw frame hash 不同：变化发生在这两个观测点之间。
+- server 与 strategy 不同：查看 adapter 的正常变换，确认是否意外替换视频。
+- strategy、engine build、UUID scoping、process_tokens 的 raw hash 应逐层核对；
+  如果某请求的视频变成另一请求的内容，变化前后的相邻观测点就是下一步排查范围。
+- raw 各异但 fresh 特征一致：结合 metadata、采样方式、grid 判断 processor 是否处理成相同视频。
+  原始 frames 与归一化/切块后的 pixels 是不同表示，不能直接比较两者的 hash。
+- fresh 与 merged 异常：按 `mm_is_cached` 和 `mm_hashes` 对齐；fresh/missing 列表仅包含未命中项，
+  其索引不一定等于完整视频列表索引。`None` 可能是缓存协议正常省略，不表示视频丢失。
+
+这些观测覆盖 frontend 至 engine submission，尚未检查模型 worker 收到的数据。
+若上述各层始终正确，下一步应在实际 worker 的缓存接收/视觉编码入口记录同样摘要。
+观测会同步读取完整数组；设备 tensor 会复制到 CPU，因此会增加耗时并可能改变竞争时序。
+开启观测后没出现异常不等于排除了串扰，也不代表本 CPU 测试复现了 #8039。
 
 ## 本地检查
 

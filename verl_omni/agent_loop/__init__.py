@@ -18,6 +18,7 @@
 # (import cycle).
 from verl_omni.pipelines.ltx2_flow_grpo.agent_loop import LTX2DiffusionSingleTurnAgentLoop
 from verl_omni.pipelines.minimax_h3_diffusion_nft.agent_loop import MiniMaxH3DiffusionSingleTurnAgentLoop
+from verl_omni.utils.video_trace import install_agent_hooks
 
 from .composite_agent_loop import CompositeAgentLoopWorker
 from .diffusion_agent_loop import DiffusionAgentLoopOutput, DiffusionAgentLoopWorker
@@ -26,6 +27,8 @@ from .diffusion_agent_loop_tq import (
     create_diffusion_agent_loop_manager,
 )
 from .single_turn_agent_loop import DiffusionSingleTurnAgentLoop, OmniSingleTurnAgentLoop
+
+install_agent_hooks()
 
 __all__ = [
     "CompositeAgentLoopWorker",

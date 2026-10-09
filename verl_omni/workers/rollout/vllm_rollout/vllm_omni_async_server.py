@@ -40,6 +40,7 @@ from vllm_omni.entrypoints.openai.api_server import omni_init_app_state
 from vllm_omni.lora.request import LoRARequest
 
 from verl_omni.utils.net_utils import get_non_ephemeral_free_port
+from verl_omni.utils.video_trace import install_frontend_hooks, trace_generate
 from verl_omni.workers.config import DiffusionModelConfig, DiffusionRolloutConfig, OmniModelConfig
 from verl_omni.workers.rollout.base import get_rollout_sequence_parallel_size, get_rollout_world_size
 from verl_omni.workers.rollout.replica import DiffusionOutput
@@ -199,6 +200,7 @@ class vLLMOmniHttpServer(vLLMHttpServer):
                 attn_backend,
             )
 
+        install_frontend_hooks()
         engine_client = AsyncOmni(**engine_args)
         app = build_app(args)
         await omni_init_app_state(engine_client, app.state, args)
@@ -347,6 +349,7 @@ class vLLMOmniHttpServer(vLLMHttpServer):
     # Generation delegates mode-specific behavior to the selected strategy.
     # -----------------------------------------------------------------------
 
+    @trace_generate("server.receive")
     async def generate(
         self,
         prompt_ids: list[int],

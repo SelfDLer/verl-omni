@@ -19,7 +19,7 @@ export MODEL_PATH TRAIN_FILE VAL_FILE RAY_ADDRESS
 export AGENT_NUM_WORKERS=${AGENT_NUM_WORKERS:-8}
 export VAL_MAX_SAMPLES=${VAL_MAX_SAMPLES:-32}
 export EXPERIMENT_NAME=${EXPERIMENT_NAME:-8039-nextqa-${NNODES}hosts-$(date +%Y%m%d-%H%M%S)}
-export OUTPUT_DIR=${OUTPUT_DIR:-"${REPO_ROOT}/outputs/${EXPERIMENT_NAME}"}
+export OUTPUT_DIR=${OUTPUT_DIR:-"${REPO_ROOT}/outputs/debug/${EXPERIMENT_NAME}"}
 export RAY_DEDUP_LOGS=0
 export HYDRA_FULL_ERROR=1
 export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1
@@ -37,14 +37,23 @@ done
 
 command=(bash examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_npu_nextqa_v1.sh
     "++ray_kwargs.ray_init.address=${RAY_ADDRESS}"
-    trainer.val_only=true trainer.val_before_train=true trainer.use_v1=true
-    trainer.v1.trainer_mode=omni_sync trainer.resume_mode=disable trainer.save_freq=-1
+    "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_USE_EXTERNAL_MODULES=verl_omni"
+    trainer.val_only=true trainer.val_before_train=true
+    trainer.resume_mode=disable trainer.save_freq=-1
+    data.train_max_samples=32
     "data.val_max_samples=${VAL_MAX_SAMPLES}" "data.val_batch_size=${VAL_MAX_SAMPLES}"
     data.validation_shuffle=false data.filter_overlong_prompts_workers=8
     "actor_rollout_ref.rollout.agent.num_workers=${AGENT_NUM_WORKERS}"
     actor_rollout_ref.rollout.val_kwargs.n=1
     'trainer.logger=[console]'
 )
+# Forward opt-in tracing to actors on both hosts, including an existing cluster.
+if [[ -n ${VERL_OMNI_VIDEO_TRACE_DIR:-} ]]; then
+    command+=(
+        "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_DIR='${VERL_OMNI_VIDEO_TRACE_DIR}'"
+        "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_MAX_REQUESTS='${VERL_OMNI_VIDEO_TRACE_MAX_REQUESTS:-32}'"
+    )
+fi
 # Extra Hydra overrides are intentionally last, as in the underlying recipe.
 command+=("$@")
 if [[ ${DRY_RUN:-0} == 1 ]]; then
