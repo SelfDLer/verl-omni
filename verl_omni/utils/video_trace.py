@@ -429,18 +429,23 @@ def scope(name, *, incoming=None, **identity):
                 for key, value in incoming.items()
                 if key in _CONTEXT_KEYS and isinstance(value, str | int | bool | type(None))
             }
-        if "selected" not in ctx:
+        ctx.setdefault("trace_id", uuid.uuid4().hex)
+    for key, value in identity.items():
+        if type(value).__module__.split(".")[0] == "numpy" and hasattr(value, "item"):
+            value = value.item()
+        ctx[key] = value if isinstance(value, str | int | float | bool | type(None)) else type(value).__name__
+    if "selected" not in ctx:
+        target = os.environ.get("VERL_OMNI_VIDEO_TRACE_SAMPLE_KEY", "")
+        if target:
+            # Select observations only; every sample still runs through the agent.
+            ctx["selected"] = ctx.get("sample_key") is not None and str(ctx["sample_key"]) == target
+        else:
             _request_count += 1
             try:
                 limit = int(os.environ.get("VERL_OMNI_VIDEO_TRACE_MAX_REQUESTS", "32"))
             except ValueError:
                 limit = 32
             ctx["selected"] = limit == 0 or 0 < _request_count <= limit
-        ctx.setdefault("trace_id", uuid.uuid4().hex)
-    for key, value in identity.items():
-        if type(value).__module__.split(".")[0] == "numpy" and hasattr(value, "item"):
-            value = value.item()
-        ctx[key] = value if isinstance(value, str | int | float | bool | type(None)) else type(value).__name__
     token = _context.set(ctx)
     try:
         event(name + ".begin")

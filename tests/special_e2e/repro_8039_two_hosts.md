@@ -268,6 +268,66 @@ python tests/special_e2e/analyze_8039_trace.py /collected/head-trace /collected/
 若 CPU 输入/处理后特征均正确，才需要再针对实际 worker 的接收/视觉编码入口补观测。
 当前测试验证观测的隔离、异常传递和写盘阻塞时的行为，不证明已经修复双机回归或复现 #8039。
 
+## 7. 对齐单独一道题在单机和双机中的流动
+
+保留能复现问题的完整 validation 负载、batch、并发和生成参数，仅筛选需要记录的观测。
+不要为了追踪一道题把验证集缩成一道题，这会改变路由和并发条件。
+
+从已有报告的 `requests[].sample_key` 找到目标题目，它对应 parquet 中的
+`extra_info.problem_id`（通常是 `video_id_qid`），不是随机 uid/request_id。
+单机与双机均使用相同数据、抽样 seed 和过滤配置，分别设置：
+
+```bash
+export VERL_OMNI_VIDEO_TRACE_SAMPLE_KEY='实际的problem_id'
+export VERL_OMNI_VIDEO_TRACE_STAGE=frontend
+export VERL_OMNI_VIDEO_TRACE_MODE=sample
+export VERL_OMNI_VIDEO_TRACE_DIR="/tmp/8039-request-single-$(date +%Y%m%d-%H%M%S)"
+# 单机：原样运行单机对照命令，保留完整验证集。
+# 双机：目录改为 /tmp/8039-request-multi-...，原样运行双机复现命令。
+```
+
+启动脚本会转发 `SAMPLE_KEY` 到两台机器。指定该变量时，它替代 `MAX_REQUESTS` 的前 N 次选择规则，
+因此目标题目即使出现在后面也能被记录；其他题目仍正常生成和计分。
+重复出现同一道题会记录多个 trace，不擅自选择其中一次。取消筛选可 `unset VERL_OMNI_VIDEO_TRACE_SAMPLE_KEY`。
+若目标题目未被抽到或被过滤，日志里不会有该题，比较工具会报错。
+
+已有 `frontend + sample/full` 的原始日志也可直接比较，无须为了这个工具重新运行。
+`boundary + metadata` 旧日志可比较 token，视频内容会明确显示 `unknown`。
+结束后收齐两次运行的日志；双机必须包括两台机器的文件。每个目录只放一次运行的数据：
+
+```bash
+python tests/special_e2e/compare_8039_request.py \
+  --single /collected/single \
+  --multi /collected/multi-head /collected/multi-worker \
+  --sample-key '实际的problem_id' \
+  --tokenizer "$MODEL_PATH" \
+  --output-dir ./outputs/debug/8039-request-comparison
+```
+
+`--tokenizer` 可省略；仅用于离线解码第一个不同 token 附近的文本，不加载权重、不连接 Ray。
+工具生成四个文件：
+
+- `comparison.md`：沿逻辑调用路径排列的阶段表、两边真实路由和日志健康信息。
+- `comparison.json`：按 prompt、video、features、sampling 等分别报告第一次观测差异，
+  保留前一匹配位置、未能比较的阶段、不同字段和原始文件/行号。
+- `single.jsonl` / `multi.jsonl`：该题选定 trace 的原始事件，保留视频指纹、缓存标识和 token IDs。
+
+`equal` 表示该项已记录的值相同；`sample_equal` 仅表示数组采样值相同；
+`different` 表示已观测值不同；`unknown` 表示快照缺失、仅 metadata、被截断、缓存省略或存在歧义。
+例如 video 的前一匹配位置为 `frontend.input.before`、首次差异为 `frontend.tokens.before`，
+则先查这两个位置之间；采样匹配仍可能漏掉未采样像素的更早变化。
+工具比较的是两次运行的同一阶段，不会直接比较原始 frames 和处理后的 pixels。
+不同进程的 object_id、设备地址、stride 和副本作用域缓存标识不作为内容差异，原始日志仍保留它们。
+
+存在多个同题 trace 时，工具列出候选 ID，需用 `--single-trace-id` / `--multi-trace-id` 显式选择。
+一次 trace 有多个 engine resume 请求时，当前工具不猜测它们的对应关系：引擎内部阶段标为 unknown，
+仍比较可唯一识别的 agent 输入及最终输出。相同阶段重复出现也不会按文件顺序强行配对。
+缺失事件或日志丢弃不能推断为业务未执行；两机时钟不用于确定先后。
+
+首次观测差异不是根因结论。随机采样本身就可能让 response 不同；只有在上游内容已核实一致后，
+才能将调查范围继续缩向后续阶段。此工具不读取音频内容，也未覆盖 worker 缓存恢复、视觉编码器、
+权重和 logits；前端一致不能证明模型实际收到的全部输入一致。
+
 ## 本地检查
 
 ```bash

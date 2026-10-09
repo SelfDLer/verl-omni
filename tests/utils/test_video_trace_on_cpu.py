@@ -43,6 +43,7 @@ def trace(monkeypatch, tmp_path):
     monkeypatch.setenv("VERL_OMNI_VIDEO_TRACE_MODE", "metadata")
     monkeypatch.setenv("VERL_OMNI_VIDEO_TRACE_STAGE", "boundary")
     monkeypatch.setenv("VERL_OMNI_VIDEO_TRACE_MAX_REQUESTS", "0")
+    monkeypatch.delenv("VERL_OMNI_VIDEO_TRACE_SAMPLE_KEY", raising=False)
     module = load("diagnostic_test", "verl_omni/utils/video_trace.py")
     yield module
     module.flush(2)
@@ -67,6 +68,28 @@ def test_disabled_does_not_start_thread_read_data_or_create_directory(trace, mon
         trace.messages("messages", object())
     assert trace._sink is None
     assert not list(tmp_path.iterdir())
+
+
+def test_target_sample_records_only_matching_request_without_skipping_work(trace, monkeypatch):
+    monkeypatch.setenv("VERL_OMNI_VIDEO_TRACE_SAMPLE_KEY", "video_question")
+    monkeypatch.setenv("VERL_OMNI_VIDEO_TRACE_MAX_REQUESTS", "1")
+    completed = []
+    for key in (None, "other_question", "video_question", "last_question"):
+        with trace.scope("agent", sample_key=key):
+            completed.append(key)
+            trace.event("work")
+            if key == "video_question":
+                incoming = trace.export_context()
+    assert completed == [None, "other_question", "video_question", "last_question"]
+    # The remote process must preserve the originating agent's selection.
+    monkeypatch.setenv("VERL_OMNI_VIDEO_TRACE_SAMPLE_KEY", "different_remote_filter")
+    with trace.scope("server", incoming=incoming, request_id="engine-request"):
+        trace.event("received")
+    records = rows(trace)
+    assert {row["sample_key"] for row in records} == {"video_question"}
+    assert {row["trace_id"] for row in records} == {incoming["trace_id"]}
+    assert sum(row["event"] == "work" for row in records) == 1
+    assert sum(row["event"] == "received" for row in records) == 1
 
 
 def test_token_snapshots_are_complete_immutable_and_not_limited_to_128_items(trace, monkeypatch):
