@@ -43,6 +43,7 @@ from verl.workers.engine.base import EngineRegistry
 from verl.workers.engine.fsdp.transformer_impl import FSDPEngineWithLMHead
 from verl.workers.engine.fsdp.utils import get_sharding_strategy
 
+from verl_omni.utils.fsdp_offload import install_fsdp2_cpu_transfer_guard
 from verl_omni.utils.fsdp_utils import apply_fsdp2, collect_lora_params
 from verl_omni.workers.config import OmniModelConfig
 
@@ -380,6 +381,8 @@ class OmniFSDPEngine(FSDPEngineWithLMHead):
             full_state = module.state_dict()
             # DIFF vs upstream: our apply_fsdp2 takes the ignored subtrees
             apply_fsdp2(module, fsdp_kwargs, self.engine_config, ignored_names=ignored_names)
+            if install_fsdp2_cpu_transfer_guard(module, fsdp_mesh.device_type):
+                logger.info("Enabled FSDP2 NPU-to-CPU transfer waits before shard repadding")
             fsdp2_load_full_state_dict(module, full_state, fsdp_mesh, offload_policy)
         else:
             raise NotImplementedError(f"Unknown strategy {self.engine_config.strategy}")

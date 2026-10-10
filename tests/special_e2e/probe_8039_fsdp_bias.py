@@ -80,6 +80,8 @@ def format_summary(reports):
         "export_unobserved has no intermediate tensor reads between load and export.",
         "Other cases synchronize for observations and can change timing.",
         "Counts are parameter checks across ranks, not counts of distinct parameters.",
+        f"suites={sorted({report.get('suite', 'unrecorded') for report in reports})} "
+        f"production_guarded_models={sum(report.get('guarded_models', 0) for report in reports)}",
     ]
     stages, failures, ranks, gaps = {}, {}, {}, []
     for report in sorted(reports, key=lambda value: value["rank"]):
@@ -218,7 +220,14 @@ def run(args):
     path = args.output / f"bias-probe-{socket.gethostname()}-rank{rank}.jsonl"
     # Separate directories per invocation make stale records explicit instead of merging runs.
     stream = path.open("x", encoding="utf-8")
-    report = {"rank": rank, "host": socket.gethostname(), "stages": [], "gaps": []}
+    report = {
+        "rank": rank,
+        "host": socket.gethostname(),
+        "stages": [],
+        "gaps": [],
+        "suite": args.suite,
+        "guarded_models": 0,
+    }
 
     def emit(event, **values):
         stream.write(json.dumps({"event": event, "rank": rank, **values}, ensure_ascii=True) + "\n")
@@ -298,6 +307,14 @@ def run(args):
                 reference[name] = ((torch.arange(4304) % 127 - 63).float() / 16 - index / 16).to(dtype)
         for length in (4096, 4320):
             reference[f"layers.control{length}.bias"] = ((torch.arange(length) % 127 - 63).float() / 16).to(dtype)
+        install_guard = None
+        if args.suite == "guarded":
+            if args.device != "npu":
+                raise ValueError("the production transfer guard is scoped to NPU FSDP2")
+            guard_file = Path(__file__).resolve().parents[2] / "verl_omni/utils/fsdp_offload.py"
+            install_guard = runpy.run_path(guard_file)["install_fsdp2_cpu_transfer_guard"]
+            functions.append(install_guard)
+
         runtime = {
             "world_size": world,
             "fsdp_size": size,
@@ -347,6 +364,12 @@ def run(args):
             for layer in model.layers.values():
                 fully_shard(layer, mesh=mesh, mp_policy=policy, reshard_after_forward=True)
             fully_shard(model, mesh=mesh, mp_policy=policy, reshard_after_forward=True)
+            if install_guard is not None:
+                installed = install_guard(model, args.device)
+                if not installed:
+                    raise RuntimeError("production transfer guard was not installed")
+                report["guarded_models"] += 1
+                emit("transfer_guard", installed=True, source=source_info(install_guard))
             load(model, state)
             return model
 
@@ -523,7 +546,7 @@ def main():
     parser.add_argument("--blocks", type=int, default=27)
     parser.add_argument("--dtype", choices=("bfloat16", "float32"), default="bfloat16")
     parser.add_argument("--timeout", type=int, default=300, help="Process group timeout in seconds")
-    parser.add_argument("--suite", choices=("lifecycle", "offload"), default="lifecycle")
+    parser.add_argument("--suite", choices=("lifecycle", "offload", "guarded"), default="lifecycle")
     parser.add_argument("--repeats", type=int, default=2, help="Fresh-model trials per variant in the offload suite")
     args = parser.parse_args()
     if args.summarize:

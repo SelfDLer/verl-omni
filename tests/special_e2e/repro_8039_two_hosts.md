@@ -689,6 +689,46 @@ torchrun --nnodes=2 --nproc_per_node=16 --node_rank="$NODE_RANK" \
 训练上下文退出和 checkpoint 等实际调用卸载的入口，并用相同样本验证 worker 参数与输出。
 新结果仍发送 `bias_probe_summary.txt` 即可，不需要上传完整 JSON。
 
+### 五组对照确认后的 actor 修复
+
+在 32 卡的两次重复中，原流程、卸载前同步、卸载后同步均失败，本地损坏只出现在 FSDP rank 31；
+阻塞拷贝与补齐前同步在加载、两次卸载、导出及前向的全部检查中通过。
+这将小型复现中的故障机制定位到：异步 NPU→CPU 拷贝尚未完成，CPU 已读取该张量并重建不等长分片的补齐存储。
+对完整 NextQA 准确率的影响仍需修复后的验证结果确认。
+
+`OmniFSDPEngine` 现在在 NPU FSDP2 包装完成后、加载参数前，为这个模型安装
+`verl_omni/utils/fsdp_offload.py` 中的传输保护。它包装根模型 `_apply` 的转换函数，
+每次 NPU→CPU 转换后先等待源设备，再把结果交回子模块的 `_apply`，从而赶在子 FSDP 模块补齐前完成拷贝。
+只在根 `_apply` 返回后同步仍然太晚，因为子模块已完成补齐。
+
+该保护覆盖通过根模型进行的初始化后卸载、权重导出、训练/验证上下文退出、checkpoint 保存/恢复后的卸载。
+无需修改安装在 site-packages 的 verl，也不全局替换 PyTorch 方法。
+FSDP1、非 NPU 模型、CPU 内转换及向设备加载保持原路径。
+代价是 NPU→CPU 迁移会逐张量等待，可能增加卸载耗时；当前优先保证参数正确，不承诺吞吐不变。
+
+可以用同一个小实验验证生产代码中的实际保护函数。两边更新至包含修复的同一提交，沿用原来的
+torchrun 命令，仅把参数改成 `--suite guarded`，并更换输出目录：
+
+```bash
+HEAD_IP=172.27.3.117
+NODE_RANK=0                 # 第二台为 1
+torchrun --nnodes=2 --nproc_per_node=16 --node_rank="$NODE_RANK" \
+  --master_addr="$HEAD_IP" --master_port=29639 \
+  tests/special_e2e/probe_8039_fsdp_bias.py \
+  --checkpoint /mnt/share/z00988734/src/weight/Qwen3-Omni-30B-A3B-Instruct \
+  --suite guarded \
+  --output outputs/debug/8039-bias-guarded
+```
+
+该模式从生产文件加载同一个安装函数，安装失败会报错，不会静默跳过。
+摘要应显示 `suites=['guarded']`、`production_guarded_models=64`（32 rank 各创建两份模型），
+且所有阶段为 equal。原 `--suite lifecycle` 仍是未安装保护的对照，不能用它判断生产修复是否生效。
+
+然后用相同的固定 256 样本验证集重新运行双机 NextQA，核对目标样本的 worker bias 与 checkpoint、
+视觉内部特征及最终回答。无需再次采集旧版单机基线来检查参数是否恢复。
+**必须启动新的 actor/rollout 进程并从原始 checkpoint 重新加载**；保护不会修复已经损坏的驻留参数，
+也不会恢复此前用坏参数训练出的 checkpoint。视频 trace 开关不会控制这项修复，关闭 trace 时同样生效。
+
 ### 唤醒 OOM 时的显存时序
 
 设置非空 `VERL_OMNI_VIDEO_TRACE_DIR` 且 `VERL_OMNI_VIDEO_TRACE_STAGE=worker` 时，
