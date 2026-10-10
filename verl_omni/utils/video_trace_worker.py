@@ -58,13 +58,14 @@ def snapshot(value):
     if not count:
         raw = b""
     else:
-        coordinates = (
-            tuple(torch.tensor(axis.copy(), device=value.device) for axis in np.unravel_index(indices, value.shape))
-            if value.ndim
-            else ()
-        )
-        sample = value.detach()[coordinates] if value.ndim else value.detach()
-        raw = sample.contiguous().reshape(-1).view(torch.uint8).cpu().numpy().tobytes()
+        with trace.device_sample(value):
+            coordinates = (
+                tuple(torch.tensor(axis.copy(), device=value.device) for axis in np.unravel_index(indices, value.shape))
+                if value.ndim
+                else ()
+            )
+            sample = value.detach()[coordinates] if value.ndim else value.detach()
+            raw = sample.contiguous().reshape(-1).view(torch.uint8).cpu().numpy().tobytes()
     result.update(
         digest_status="sample",
         sample_count=len(indices),
@@ -326,6 +327,8 @@ class WorkerObserver:
                 if preprocess:
                     self.active = []
                     self.safe(lambda: self.active.extend(self.spans(arguments["scheduler_output"])))
+                    if self.active:
+                        trace.memory_event("preprocess.before", request_ids=[item[0]["id"] for item in self.active])
                     if self.vision is not None:
                         self.vision.safe(self.vision.prepare)
                 try:
@@ -339,6 +342,8 @@ class WorkerObserver:
                     return result
                 finally:
                     if preprocess:
+                        if self.active:
+                            trace.memory_event("preprocess.exit")
                         self.active = previous
 
             setattr(self.runner, name, observed)
@@ -371,6 +376,7 @@ def _install_vision(observer):
 
 
 def install(worker):
+    trace.install_memory(worker)
     if not enabled() or getattr(worker, "_video_observer", None) is not None:
         return
     try:
@@ -388,13 +394,19 @@ def install(worker):
         trace.event("trace.install", force=True, boundary="worker", status="unavailable", error=str(exc))
 
 
-def register_worker(worker, request_id, context, trace_options=None):
-    """Return worker-side evidence even when its trace environment is missing."""
-    if trace_options is not None and context.get("selected"):
+def configure_worker(trace_options):
+    """Apply only the diagnostic environment whitelist at startup or registration."""
+    if trace_options is not None:
         for name in _TRACE_DEFAULTS:
             value = trace_options.get(name)
             if isinstance(value, str):
                 os.environ[name] = value
+
+
+def register_worker(worker, request_id, context, trace_options=None):
+    """Return worker-side evidence even when its trace environment is missing."""
+    if context.get("selected"):
+        configure_worker(trace_options)
     reply = {
         "video_trace_ack": True,
         "host": socket.gethostname(),

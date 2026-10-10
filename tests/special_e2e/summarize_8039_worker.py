@@ -257,6 +257,75 @@ def live_health(paths, sample_key):
     return "\n".join(lines) + "\n"
 
 
+def memory_health(paths):
+    """Read small per-worker lifecycle files without requiring request traces."""
+    files = set()
+    for path in paths:
+        files.update(path.rglob("video-memory-*.jsonl") if path.is_dir() else [path])
+    lines = [f"Worker memory timeline: files={len(files)}"]
+    if not files:
+        lines.append("NO_MEMORY_FILES: installation/environment/path not verified; no timing inference is possible.")
+    for path in sorted(files):
+        tail, first_wake, first_sample, invalid, installed = [], None, None, 0, None
+        pending_wake = None
+        with path.open(encoding="utf-8") as stream:
+            for line in stream:
+                try:
+                    row = json.loads(line)
+                    if not isinstance(row, dict):
+                        raise ValueError("not a record")
+                except ValueError:
+                    invalid += 1
+                    continue
+                phase = row.get("event")
+                if phase == "memory.installed":
+                    installed = row
+                if phase == "wake_up.before":
+                    first_wake = first_wake or row
+                    pending_wake = row
+                elif phase in ("wake_up.after", "wake_up.error"):
+                    pending_wake = None
+                if phase == "sample.first.before":
+                    first_sample = row
+                tail = (tail + [row])[-8:]
+        lines.append(f"\n{path.name}: invalid_or_partial_lines={invalid}")
+        lines.append("  hooks=" + compact((installed or {}).get("hooks", "unknown")))
+        if first_wake:
+            lines.append(f"  first_observed_wake samples_started={first_wake.get('samples_started', 'unknown')}")
+        lines.append("  first_device_sample=" + str((first_sample or {}).get("sequence", "not recorded")))
+        if pending_wake:
+            started = pending_wake.get("samples_started")
+            lines.append(
+                f"  INCOMPLETE_WAKE calls={pending_wake.get('wake_calls')} samples_started={started}: "
+                "still running or exited before completion; not proof of OOM by itself."
+            )
+            if started == 0 and installed:
+                lines.append("  No traced device sampling preceded this wake in the observed worker lifetime.")
+        for row in tail:
+            memory = row.get("memory", {})
+            metrics = " ".join(
+                f"{key}={memory[key] / 1048576:.1f}MiB"
+                for key in ("free_bytes", "memory_allocated", "memory_reserved", "max_memory_allocated")
+                if isinstance(memory.get(key), int)
+            )
+            if not metrics:
+                metrics = "statistics=" + compact(memory)
+            lines.append(
+                f"  #{row.get('sequence')} {row.get('event')} rank={row.get('worker_rank')} "
+                f"samples={row.get('samples_completed')}/{row.get('samples_started')} {metrics} "
+                + compact({key: row[key] for key in ("arguments", "checkpoint", "error") if key in row})
+            )
+    lines.append(
+        "Peak counters are not reset; free memory is device-wide, allocated/reserved are allocator statistics."
+    )
+    output = "\n".join(lines) + "\n"
+    if len(output.encode()) > MAX_OUTPUT_BYTES:
+        output = (
+            output.encode()[: MAX_OUTPUT_BYTES - 100].decode(errors="ignore") + "\nTRUNCATED: more workers omitted.\n"
+        )
+    return output
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -264,7 +333,18 @@ def main():
     )
     parser.add_argument("--raw", type=Path, nargs="+", help="Inspect live raw trace directories/files without compare")
     parser.add_argument("--sample-key", help="Required with --raw")
+    parser.add_argument(
+        "--memory", type=Path, nargs="+", help="Inspect worker sleep/wake and sampling memory timelines"
+    )
     args = parser.parse_args()
+    if args.memory:
+        if args.directory or args.raw or args.sample_key:
+            parser.error("--memory cannot be combined with other input modes")
+        try:
+            print(memory_health(args.memory), end="")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            parser.error(str(exc))
+        return
     if args.raw:
         if args.directory or not args.sample_key:
             parser.error("--raw requires --sample-key and cannot be combined with a compare directory")

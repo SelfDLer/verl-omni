@@ -121,6 +121,12 @@ class Model:
         boundaries = np.cumsum(np.prod(grids, axis=1) // 4)[:-1]
         return tuple(np.split(output, boundaries))
 
+    def embed_multimodal(self, **kwargs):
+        return self._process_video_input(kwargs)
+
+    def __call__(self, num_tokens):
+        return self._get_deepstack_input_embeds(num_tokens)
+
     def _set_deepstack_input_embeds(self, deepstack_input_embeds):
         self.deepstack = deepstack_input_embeds
 
@@ -153,7 +159,7 @@ class Runner(helpers.Runner):
             "pixel_values_videos": np.concatenate([d["pixel_values_videos"] for _, d in inputs]),
             "video_grid_thw": np.stack([d["video_grid_thw"] for _, d in inputs]),
         }
-        outputs = self.model._process_video_input(data)
+        outputs = self.model.embed_multimodal(**data)
         for key, value in zip(hashes, outputs, strict=True):
             self._cache_encoder_output(key, value)
         self._gather_mm_embeddings(scheduler_output)
@@ -163,8 +169,10 @@ class Runner(helpers.Runner):
         return self.result
 
 
-def setup(worker_module, trace):
+def setup(worker_module, trace, wrap=None):
     runner = Runner()
+    if wrap is not None:
+        runner.model = wrap(runner.model)
     worker = NS(model_runner=runner, rank=0, local_rank=0)
     worker_module.install(worker)
     with trace.scope("agent", sample_key="target", sample_index=0, video_id="v", question_id=0):
@@ -187,6 +195,71 @@ def setup(worker_module, trace):
     scheduler = NS(scheduled_new_reqs=reqs, num_scheduled_tokens={r.req_id: 3 for r in reqs}, finished_req_ids=[])
     runner._update_states(scheduler)
     return worker, scheduler
+
+
+class ACLGraphWrapper:
+    """Match Ascend's attribute forwarding and unchanged callable dispatch."""
+
+    def __init__(self, runnable):
+        self.runnable = runnable
+        self.calls = 0
+
+    def __getattr__(self, name):
+        return getattr(self.runnable, name)
+
+    def __call__(self, *args, **kwargs):
+        self.calls += 1
+        return self.runnable(*args, **kwargs)
+
+
+@pytest.mark.parametrize("depth", [1, 2])
+def test_acl_wrapper_hooks_follow_actual_internal_calls(worker_module, trace, depth):
+    def wrap(model):
+        for _ in range(depth):
+            model = ACLGraphWrapper(model)
+        return model
+
+    worker, scheduler = setup(worker_module, trace, wrap)
+    runner = worker.model_runner
+    outer = runner.model
+    actual = outer
+    wrappers = []
+    while isinstance(actual, ACLGraphWrapper):
+        wrappers.append(actual)
+        actual = actual.runnable
+    plain = Runner()
+    plain._update_states(scheduler)
+    expected = plain._preprocess(scheduler)
+    result = runner._preprocess(scheduler)
+    assert runner.model is outer
+    np.testing.assert_array_equal(result[1], expected[1])
+    assert outer(6).tensors.keys() == actual(6).tensors.keys()
+    assert all(wrapper.calls == 1 for wrapper in wrappers)
+    records = helpers.rows(trace)
+    gaps = [row for row in records if row["event"] == "worker.vision.gap"]
+    assert not gaps, gaps
+    captured = {row["checkpoint"] for row in records if row["event"] == "worker.vision.tensor"}
+    assert {
+        "video.input",
+        "video.output",
+        "visual.input",
+        "visual.output",
+        "blocks.00.output",
+        "blocks.01.output",
+        "deepstack.set.0",
+        "deepstack.consume.deepstack_input_embeds_0",
+        "merge.video",
+    } <= captured
+    assert worker._video_observer.vision.owner is actual
+    for wrapper in wrappers:
+        assert not set(vars(wrapper)) & {
+            "_process_video_input",
+            "_set_deepstack_input_embeds",
+            "_get_deepstack_input_embeds",
+            "embed_input_ids",
+        }
+    hooks = worker._video_observer.vision.hooks
+    assert hooks["video"]["class"].endswith(".Model")
 
 
 def test_real_observation_pipeline_captures_selected_video_layers_weights_and_deepstack(worker_module, trace, tmp_path):
@@ -448,11 +521,15 @@ def test_accelerator_reads_require_opt_in_and_transfer_only_bounded_samples(nume
             return self.value
 
     monkeypatch.setitem(sys.modules, "torch", NS(tensor=lambda x, device: np.asarray(x), uint8=np.uint8))
+    monkeypatch.setenv("VERL_OMNI_VIDEO_TRACE_STAGE", "worker")
+    trace.install_memory(NS(rank=0, wake_up=lambda: None))
     value = Tensor(np.arange(100_000, dtype=np.float32).reshape(1000, 100)[:, ::2])
     monkeypatch.setenv("VERL_OMNI_VIDEO_TRACE_DEVICE_SAMPLE", "0")
     assert numeric.snapshot(value)["digest_status"] == "skipped_non_cpu"
     assert transfers == []
+    assert trace._memory_recorder.samples_started == 0
     monkeypatch.setenv("VERL_OMNI_VIDEO_TRACE_DEVICE_SAMPLE", "1")
     result = trace._finalize(numeric.snapshot(value, limit=99999, full_cpu=True))
     assert result["sample_count"] == 4096 and transfers == [4096 * 4]
     assert "full_cpu" not in result
+    assert trace._memory_recorder.samples_started == trace._memory_recorder.samples_completed == 1

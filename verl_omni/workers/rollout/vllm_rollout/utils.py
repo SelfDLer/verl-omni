@@ -132,13 +132,14 @@ class vLLMOmniColocateWorkerExtension(CustomPipelineWorkerExtension):
             return model, model_config
         return None
 
-    def monkey_patch_model(self) -> None:
+    def monkey_patch_model(self, trace_options=None) -> None:
+        from verl_omni.utils.video_trace_worker import configure_worker, install
+
+        configure_worker(trace_options)
         # startup MoE weight-loader patch; re-attached per sync in update_weights_from_ipc
         standard = self._get_standard_weight_model_and_config()
         if standard is not None and _is_moe_engine(standard[0]):
             patch_vllm_moe_model_weight_loader(standard[0])
-        from verl_omni.utils.video_trace_worker import install
-
         install(self)
 
     def register_video_trace(self, request_id, context, trace_options=None):

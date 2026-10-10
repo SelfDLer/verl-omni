@@ -22,6 +22,7 @@ import atexit
 import base64
 import contextlib
 import contextvars
+import functools
 import hashlib
 import itertools
 import json
@@ -44,6 +45,7 @@ _sink = None
 _sink_lock = threading.Lock()
 _sink_pid = os.getpid()
 _request_count = 0
+_memory_recorder = None
 _logger = logging.getLogger(__name__)
 _CONTEXT_KEYS = (
     "trace_id",
@@ -77,6 +79,154 @@ _SAMPLING_KEYS = (
 def enabled():
     """Enable only when a destination was explicitly supplied to this process."""
     return bool(os.environ.get("VERL_OMNI_VIDEO_TRACE_DIR"))
+
+
+class _MemoryRecorder:
+    def __init__(self, worker):
+        self.pid = os.getpid()
+        self.host = socket.gethostname()
+        self.rank = getattr(worker, "rank", None)
+        self.device = str(getattr(worker, "device", "unknown"))
+        self.path = Path(os.environ["VERL_OMNI_VIDEO_TRACE_DIR"]).resolve() / (
+            f"video-memory-{self.host}-{self.pid}-{uuid.uuid4().hex[:8]}.jsonl"
+        )
+        self.sequence = 0
+        self.samples_started = 0
+        self.samples_completed = 0
+        self.wake_calls = 0
+        self.last_sample = None
+        self.lock = threading.RLock()
+
+    def write(self, phase, **fields):
+        # Close each record before returning to a potentially fatal native call.
+        # No tensor creation, synchronization, cache clearing or peak reset.
+        try:
+            with self.lock:
+                self.sequence += 1
+                if self.sequence > 4096 and phase not in ("wake_up.before", "wake_up.after", "wake_up.error"):
+                    if self.sequence != 4097:
+                        return
+                    phase = "memory.record_limit"
+                stats = {}
+                npu = getattr(sys.modules.get("torch"), "npu", None)
+                device = None
+                try:
+                    if npu is None or not npu.is_initialized():
+                        stats["status"] = "npu_not_initialized"
+                    else:
+                        device = npu.current_device()
+                except Exception as exc:
+                    stats["status"] = "query_failed"
+                    stats["error"] = type(exc).__name__
+                if device is not None:
+                    stats["device_index"] = device
+                    for name in ("memory_allocated", "memory_reserved", "max_memory_allocated", "max_memory_reserved"):
+                        try:
+                            stats[name] = int(getattr(npu, name)(device))
+                        except Exception as exc:
+                            stats[name] = {"error": type(exc).__name__}
+                    try:
+                        stats["free_bytes"], stats["total_bytes"] = map(int, npu.mem_get_info(device))
+                    except Exception as exc:
+                        stats["mem_get_info_error"] = type(exc).__name__
+                row = {
+                    "event": phase,
+                    "sequence": self.sequence,
+                    "time_ns": time.time_ns(),
+                    "host": self.host,
+                    "pid": self.pid,
+                    "worker_rank": self.rank,
+                    "device": self.device,
+                    "samples_started": self.samples_started,
+                    "samples_completed": self.samples_completed,
+                    "wake_calls": self.wake_calls,
+                    "last_sample": self.last_sample,
+                    "memory": stats,
+                    **fields,
+                }
+                try:
+                    self.path.parent.mkdir(parents=True, exist_ok=True)
+                    with self.path.open("a", encoding="utf-8") as stream:
+                        stream.write(json.dumps(row, ensure_ascii=True) + "\n")
+                except Exception as exc:
+                    row["write_error"] = type(exc).__name__
+                if phase.startswith("wake_up.") or phase == "memory.installed":
+                    print(f"[video-memory] {json.dumps(row)}", file=sys.stderr, flush=True)
+        except Exception:
+            # Filesystem/statistics failures must not replace the model result.
+            pass
+
+
+def memory_event(phase, **fields):
+    """Write a small synchronous worker record, independent of request selection."""
+    recorder = _memory_recorder
+    if enabled() and recorder is not None and recorder.pid == os.getpid():
+        recorder.write(phase, **fields)
+
+
+@contextlib.contextmanager
+def device_sample(value):
+    """Count actual device sample attempts without keeping tensor references."""
+    recorder = _memory_recorder
+    if not enabled() or recorder is None or recorder.pid != os.getpid():
+        yield
+        return
+    recorder.samples_started += 1
+    recorder.last_sample = {"shape": list(value.shape), "dtype": str(value.dtype), "device": str(value.device)}
+    first = recorder.samples_started == 1
+    if first:
+        recorder.write("sample.first.before")
+    try:
+        yield
+    except BaseException as exc:
+        recorder.write("sample.error", error=type(exc).__name__)
+        raise
+    else:
+        recorder.samples_completed += 1
+        if first:
+            recorder.write("sample.first.after")
+
+
+def install_memory(worker):
+    """Observe sleep/wake before any selected request; installation is idempotent."""
+    global _memory_recorder
+    if not enabled() or os.environ.get("VERL_OMNI_VIDEO_TRACE_STAGE") != "worker":
+        return
+    try:
+        recorder = getattr(worker, "_video_memory_recorder", None)
+        if recorder is not None:
+            _memory_recorder = recorder
+            return
+        recorder = _MemoryRecorder(worker)
+        worker._video_memory_recorder = _memory_recorder = recorder
+        hooks = {}
+        for name in ("sleep", "wake_up"):
+            original = getattr(worker, name, None)
+            if not callable(original):
+                hooks[name] = "unavailable"
+                continue
+
+            @functools.wraps(original)
+            def observed(*args, _original=original, _name=name, **kwargs):
+                if not enabled():
+                    return _original(*args, **kwargs)
+                if _name == "wake_up":
+                    recorder.wake_calls += 1
+                details = {"arguments": repr((args, kwargs))[:512]}
+                recorder.write(_name + ".before", **details)
+                try:
+                    result = _original(*args, **kwargs)
+                except BaseException as exc:
+                    recorder.write(_name + ".error", error=type(exc).__name__, **details)
+                    raise
+                recorder.write(_name + ".after", **details)
+                return result
+
+            setattr(worker, name, observed)
+            hooks[name] = "installed"
+        recorder.write("memory.installed", hooks=hooks)
+    except Exception:
+        pass
 
 
 class _Bytes:

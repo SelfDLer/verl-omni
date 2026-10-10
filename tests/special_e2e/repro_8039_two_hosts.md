@@ -510,6 +510,51 @@ python tests/special_e2e/summarize_8039_worker.py \
 这些阈值只描述误差，不是正确性判据。哈希不同仍标 different，微小浮点差异不会被自动判为数据串扰；
 抽样一致也不能证明完整权重/张量相等。尚未覆盖语言模型内部层、最终 logits 和 NPU kernel 内部运算。
 
+### ACLGraphWrapper 下安装成功但视觉内部检查点缺失
+
+如果 manifest 的 `video`、`deepstack.set/consume` 显示安装对象是 `ACLGraphWrapper`，
+同时只有 source/cache/merge 检查点和 `visual grid differs from video batch`，
+应先检查埋点是否误装到属性转发包装器。包装器上的方法赋值不会拦截其内部模型的方法调用；
+埋点没有建立 video 上下文时，即使模型 grid 正常，也会触发该 gap。
+修复后的安装逻辑沿方法的 `__self__` 找到真实模型对象，并拒绝把转发方法覆盖在错误对象上。
+包装器及其图执行策略保持原样；真正的图重放若绕过 Python，仍会报告缺失而非宣称采集成功。
+
+旧 multi 的权重样本、source、cache 各分支和 merge 观测仍可用于比较。
+可以先用修复版采 single，与旧 multi 比较共有检查点；旧 multi 缺失的内部层会继续是 unknown，
+无法通过离线脚本补出。如果共有证据不能定位，再决定是否补采 multi 内部层。
+比较前保持样本、模型、采样参数、设备采样数量等原实验设置一致。
+
+### 唤醒 OOM 时的显存时序
+
+设置非空 `VERL_OMNI_VIDEO_TRACE_DIR` 且 `VERL_OMNI_VIDEO_TRACE_STAGE=worker` 时，
+启动阶段的 `monkey_patch_model` RPC 会传递诊断配置，并在请求注册前安装 worker 的 sleep/wake 观测。
+不依赖目标样本先到达，也不依赖 `VISION=1`。每个 worker 单独写入
+`video-memory-<host>-<pid>-<suffix>.jsonl`，共享目录不会共用一个文件。
+
+```bash
+python tests/special_e2e/summarize_8039_worker.py \
+  --memory /path/to/trace-multi > memory_summary.txt
+```
+
+这个命令只需要当前运行的日志，不需要单机结果、样本 ID 或 comparison.json。
+若两台机器使用本地目录，应分别执行；共享目录可统一读取。
+摘要上限 64 KiB，可在失败后直接发送。原始文件保留每次 sleep/wake、首次设备采样、
+选定请求的 preprocess、视觉权重采样和各视觉 block 入口时的显存统计。
+
+- `INCOMPLETE_WAKE` 且 `samples_started=0`：记录覆盖的 worker 生命周期内，尚未执行设备采样；
+  结合同一 worker 的 OOM 日志，可排除该进程已执行的采样操作导致这次失败。
+  不能据此排除其他进程占用、启动安装行为或安装前的问题。
+- `samples_started>0`：唤醒前已执行过采样，重点查看采样后、sleep 后和 wake 前的 free/allocated/reserved 变化。
+  这只是时序证据，并不能单独证明采样造成 OOM。
+- 没有文件、安装缺失、统计查询失败、运行中的未完成 wake 均不能当成“没有显存问题”。
+
+记录使用已初始化 NPU 的统计查询，不创建设备张量，不同步设备，不清缓存，不重置峰值。
+free 是整张卡的空闲量，allocated/reserved 是该进程分配器统计，未必覆盖 CaMem 和通信库全部分配；
+峰值也可能包含此前模型初始化。生命周期记录同步写入并关闭文件，关键唤醒记录另写 stderr，
+因此 native abort 前的记录不依赖后台队列；这不是断电持久性保证，共享目录写入也会增加延迟。
+普通记录最多 4096 条，超过后标记截断，唤醒记录继续保留。
+设备采样本身仍会分配索引张量和临时结果；采样数量上限与 `MAX_BYTES` **不是 NPU 显存峰值上限**。
+
 ## 本地检查
 
 ```bash

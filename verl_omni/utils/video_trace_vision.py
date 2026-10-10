@@ -25,6 +25,7 @@ import math
 import sys
 from collections import Counter
 
+from verl_omni.utils import video_trace as trace
 from verl_omni.utils import video_trace_numeric as numeric
 
 
@@ -128,6 +129,7 @@ class VisionObserver:
                 )
             if self.visual is None:
                 continue
+            trace.memory_event("vision.weights.before", request_id=entry["id"])
             # Probe actual loaded vision parameters and buffers at request time,
             # including every block/merger, not just checkpoint filenames.
             for kind, iterator in (
@@ -148,6 +150,7 @@ class VisionObserver:
                         batch = {}
                 if batch:
                     self.observer.emit(entry, "worker.vision.weights", kind=kind, values=batch)
+            trace.memory_event("vision.weights.after", request_id=entry["id"])
 
     def batch(self, arguments, result):
         hashes, kwargs, refs = result
@@ -234,12 +237,18 @@ class VisionObserver:
 
     def visual_begin(self, arguments):
         grids = grid(arguments["grid_thw"])
-        if grids != [member["grid"] for member in self.current]:
-            raise ValueError("visual grid differs from video batch; sharded/reordered layout not inferred")
+        expected = [member["grid"] for member in self.current]
+        if grids != expected:
+            raise ValueError(
+                "visual grid differs from video batch; sharded/reordered layout not inferred; "
+                f"video_context_items={len(expected)}, expected_head={expected[:4]}, actual_head={grids[:4]}"
+            )
         self.visual_active = True
         self.tensor("visual.input", arguments["x"])
 
     def block_begin(self, checkpoint, arguments):
+        if checkpoint.startswith("blocks.") and checkpoint.count(".") == 1:
+            trace.memory_event("vision.block.before", checkpoint=checkpoint)
         value = next(iter(arguments.values()))
         self.tensor(checkpoint + ".input", value)
         # Actual attention boundaries/rotary inputs for each block are captured
@@ -388,6 +397,9 @@ class VisionObserver:
     def attach(self, owner, method, name, before=None, after=None, context=None):
         try:
             original = getattr(owner, method)
+            bound_owner = getattr(original, "__self__", None)
+            if bound_owner is not None and bound_owner is not owner:
+                raise TypeError("method belongs to a different object; refusing to shadow a forwarded method")
             signature = inspect.signature(original)
             if inspect.iscoroutinefunction(original):
                 raise TypeError("async vision methods are unsupported")
@@ -441,6 +453,7 @@ class VisionObserver:
                 "class": f"{type(owner).__module__}.{type(owner).__qualname__}",
                 "signature": str(signature),
                 "source_sha256": source_hash,
+                "method_qualname": getattr(function, "__qualname__", None),
             }
         except Exception as exc:
             self.hooks[name] = {"status": "unavailable", "reason": str(exc)[:512]}
@@ -454,11 +467,20 @@ class VisionObserver:
             if id(item) in seen:
                 continue
             seen.add(id(item))
-            if hasattr(item, "visual") and hasattr(item, "_process_video_input"):
+            video_method = getattr(item, "_process_video_input", None)
+            bound_owner = getattr(video_method, "__self__", None)
+            if bound_owner is not None and bound_owner is not item:
+                # ACLGraphWrapper forwards attribute reads to its runnable.
+                # Writing a hook on the wrapper cannot observe internal calls.
+                candidates.insert(0, bound_owner)
+                continue
+            if hasattr(item, "visual") and bound_owner is item:
                 self.owner, self.visual = item, item.visual
                 break
             candidates.extend(
-                getattr(item, key) for key in ("thinker", "model", "_orig_mod") if getattr(item, key, None) is not None
+                getattr(item, key)
+                for key in ("runnable", "_orig_mod", "thinker", "model")
+                if getattr(item, key, None) is not None
             )
         if self.visual is None:
             raise ValueError("Qwen video processor/visual instance not found")

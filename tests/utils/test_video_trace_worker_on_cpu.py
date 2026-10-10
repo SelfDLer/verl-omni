@@ -48,6 +48,25 @@ def feature(modality, index):
     )
 
 
+def test_startup_options_enable_memory_before_request_registration(worker_module, trace, monkeypatch, tmp_path):
+    monkeypatch.delenv("VERL_OMNI_VIDEO_TRACE_DIR")
+    worker = NS(model_runner=Runner(), rank=0, wake_up=lambda tags=None: tags)
+    worker_module.configure_worker(
+        {
+            "VERL_OMNI_VIDEO_TRACE_DIR": str(tmp_path),
+            "VERL_OMNI_VIDEO_TRACE_STAGE": "worker",
+            "UNRELATED_VIDEO_TRACE_TEST_OPTION": "must not propagate",
+        }
+    )
+    worker_module.install(worker)
+    assert "UNRELATED_VIDEO_TRACE_TEST_OPTION" not in os.environ
+    assert not worker._video_observer.pending
+    assert worker.wake_up(tags=["weights"]) == ["weights"]
+    rows = [json.loads(line) for line in trace._memory_recorder.path.read_text().splitlines()]
+    assert rows[-2]["event"] == "wake_up.before"
+    assert rows[-2]["samples_started"] == 0
+
+
 class Runner:
     def __init__(self):
         self.requests = {}

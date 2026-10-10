@@ -13,6 +13,7 @@
 # limitations under the License.
 """Bounded numeric snapshots; accelerator reads require explicit opt-in."""
 
+import contextlib
 import math
 import os
 
@@ -52,11 +53,12 @@ def snapshot(value, limit=None, full_cpu=False, row_indices=None):
     if type(value).__module__.split(".")[0] == "torch":
         import torch
 
-        coords = tuple(torch.tensor(axis.copy(), device=value.device) for axis in coords)
-        selected = value.detach()[coords] if coords else value.detach()
-        if not count:
-            selected = selected.reshape(-1)[:0]
-        raw = selected.contiguous().reshape(-1).view(torch.uint8).cpu().numpy().tobytes()
+        with trace.device_sample(value) if device else contextlib.nullcontext():
+            coords = tuple(torch.tensor(axis.copy(), device=value.device) for axis in coords)
+            selected = value.detach()[coords] if coords else value.detach()
+            if not count:
+                selected = selected.reshape(-1)[:0]
+            raw = selected.contiguous().reshape(-1).view(torch.uint8).cpu().numpy().tobytes()
     else:
         if value.dtype.hasobject:
             return {**info, "digest_status": "skipped_object_array"}
