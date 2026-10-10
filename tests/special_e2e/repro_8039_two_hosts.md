@@ -628,6 +628,67 @@ torchrun --nnodes=2 --nproc_per_node=16 --node_rank="$NODE_RANK" \
 全部通过只表示这个小模型未复现，不能证明实际 actor 和 rollout 权重链路正常。
 发生异常时 rank 日志的 `begin/error` 保留已到达位置，不把未完成步骤计为通过。
 
+### 已复现首次 CPU 卸载后损坏：对照拷贝与补齐顺序
+
+若 `load.local`、`load.full_tensor` 均全部正确，第一次 `initial_offload.local` 就出现错误，
+并且独立 `control.dtensor_full_tensor`、`control.padded_all_gather` 也全部正确，
+则这个小实验已把首次可见损坏定位到 CPU 卸载步骤。`different=864` 表示 32 rank 各自检查的
+27 个参数有差异，而不是 864 个不同参数；整除对照的 64 次检查可独立通过。
+
+一个与这种现象吻合的机制是：`model.to("cpu", non_blocking=True)` 返回 CPU 张量后，
+FSDP2 的 `_apply` 内部马上调用 `reset_sharded_param`，在 CPU 上为最后的不等长分片重新分配
+补齐存储并复制数据。如果 NPU→CPU 拷贝尚未完成，CPU 就会把旧内容复制进新的补齐存储。
+在整个 `model.to` 返回后才同步，无法修复已经完成的错误 CPU 拷贝。
+这是需要对照确认的机制；初次卸载失败本身还不能单独证明具体内部操作的责任。
+相关源码：[FSDPModule._apply](https://github.com/pytorch/pytorch/blob/v2.10.0/torch/distributed/fsdp/_fully_shard/_fully_shard.py)、
+[FSDPParam.reset_sharded_param](https://github.com/pytorch/pytorch/blob/v2.10.0/torch/distributed/fsdp/_fully_shard/_fsdp_param.py)。
+
+先可离线重新生成旧实验的小摘要，无需 torchrun 或重跑：
+
+```bash
+python tests/special_e2e/probe_8039_fsdp_bias.py \
+  --summarize outputs/debug/8039-bias-fsdp32
+```
+
+读取原 `bias_probe_summary.json`，生成 `bias_probe_summary_v2.txt`，原 JSON 保留不变。
+新版优先展示本地分片错误，在每个阶段列出 `failing_ranks`；相同的已记录聚合错误只展开代表项，
+避免 rank 0–9 的重复结果挤掉 rank 31。去重只基于已记录的有限错误示例，不能证明完整错误向量相同。
+
+随后在两台执行一次以下小作业；沿用原环境，第一台 `NODE_RANK=0`，第二台改为 `1`：
+
+```bash
+HEAD_IP=172.27.3.117
+NODE_RANK=0
+torchrun --nnodes=2 --nproc_per_node=16 --node_rank="$NODE_RANK" \
+  --master_addr="$HEAD_IP" --master_port=29639 \
+  tests/special_e2e/probe_8039_fsdp_bias.py \
+  --checkpoint /mnt/share/z00988734/src/weight/Qwen3-Omni-30B-A3B-Instruct \
+  --suite offload --repeats 2 \
+  --output outputs/debug/8039-bias-offload-controls
+```
+
+每种对照都重新创建并加载模型，避免沿用已经损坏的参数。默认每种重复两次，自动执行五组：
+
+| 名称 | 改动位置 |
+| --- | --- |
+| `original` | 原环境安装的卸载函数 |
+| `sync_before` | 调用原卸载函数前同步设备 |
+| `sync_after` | 调用原卸载函数后同步设备 |
+| `blocking` | 使用 `model.to("cpu", non_blocking=False)`，随后清空设备缓存 |
+| `sync_before_repad` | 仅在本测试进程内临时包装实际 FSDP 参数类，在 CPU 不等长分片 reset 前同步；结束即恢复 |
+
+每组先检查没有中间张量读数的导出，再用新模型检查加载、本地 CPU 分片、载回、第二次卸载、
+保存引用/新 state_dict 的导出与前向。参数依然只有小 bias 向量，不运行完整模型或 NextQA。
+`offload_guard` 原始记录包含补齐前同步的调用次数；不支持当前 FSDP 内部接口、或不等长分片
+未覆盖两次卸载时记录 GAP，不能当作修复通过。
+
+如果 `original` 失败，而 `blocking` 和已实际调用的 `sync_before_repad` 均通过，
+且前后同步对照仍失败，就会显著加强“异步拷贝未完成时 CPU 提前补齐”的判断。
+前后同步也可能改变时序而偶尔通过，需结合两次重复与完整阶段结果分析。
+当前修改仅用于诊断，对照通过不等于训练主流程已修复。最终训练修复还需覆盖初始化、权重导出、
+训练上下文退出和 checkpoint 等实际调用卸载的入口，并用相同样本验证 worker 参数与输出。
+新结果仍发送 `bias_probe_summary.txt` 即可，不需要上传完整 JSON。
+
 ### 唤醒 OOM 时的显存时序
 
 设置非空 `VERL_OMNI_VIDEO_TRACE_DIR` 且 `VERL_OMNI_VIDEO_TRACE_STAGE=worker` 时，
