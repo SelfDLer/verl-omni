@@ -543,6 +543,34 @@ python tests/special_e2e/summarize_8039_worker.py /path/to/compare-output
 若旧 comparison 已丢失具体的 unsupported 类型说明，需要用原始日志重新运行 compare 才能恢复该说明；
 这也不需要重新运行模型。
 
+### 已有 fc1 bias 差异：离线检查坐标与 checkpoint
+
+当参数差异集中在 `blocks.*.mlp.linear_fc1.bias` 时，可以继续使用已采集的数值，
+无需启动 Ray、加载模型或重新执行单机/双机实验：
+
+```bash
+python tests/special_e2e/audit_8039_vision_bias.py /path/to/compare-output \
+  --checkpoint /path/to/Qwen3-Omni-30B-A3B-Instruct
+```
+
+输入目录需包含同一轮 compare 生成的 `comparison.json`、`single.jsonl`、`multi.jsonl`。
+脚本只依赖 Python 标准库，只从本地 safetensors 文件读取头部与指定的一维 bias；不读取视频或大权重矩阵，
+不访问 NPU。省略 `--checkpoint` 时仍能分析两次观测之间的差异位置。
+
+输出 `vision_bias_audit.txt`（最多 64 KiB，适合上传）和带完整来源引用的 `vision_bias_audit.json`，包含：
+
+- 每层差异的采样序号 `slots`、分片内下标 `local_indices` 及双方实际数值。
+- `pattern`：多少层的差异落在同一组已记录下标；`sampled_suffix` 只表示采样序列的尾部，不能推断未采样元素。
+- `single_vs_checkpoint` / `multi_vs_checkpoint`：分别与 checkpoint 比较，避免把单机默认视为正确结果。
+- 对齐时的全局下标、checkpoint 中的参数名与文件，以及具体不一致值。
+
+checkpoint 对齐明确假定普通 column-parallel 连续分片：`global = rank * local_length + local_index`，
+并要求记录的 PP=DP=1、TP rank 有效、checkpoint 长度等于 `TP * local_length`、dtype 相同。
+padding、重排、缺失 runtime、重复请求、摘要缺失或 dtype 转换不明确时保留 unknown，不推断布局。
+这里的相等仅指已采样数值相等，不是完整张量或位模式相等。
+若已经训练或恢复过 checkpoint，应指定对应版本；与原始 checkpoint 不同本身不能判定加载错误。
+这项检查用于定位参数内容及区域，不能单独区分初始加载、actor 同步和 sleep/wake 哪一步出了问题。
+
 ### 唤醒 OOM 时的显存时序
 
 设置非空 `VERL_OMNI_VIDEO_TRACE_DIR` 且 `VERL_OMNI_VIDEO_TRACE_STAGE=worker` 时，
