@@ -421,6 +421,23 @@ Markdown 会直接显示每一项 unknown 的具体原因和两边的 worker cov
 global ID 和等待关联的请求 ID（每次注册最多 64 条，超过后记录 limit）。未匹配的候选可能是同批其他请求，
 不能仅凭该事件判定目标请求异常，仍需用前端精确 core_request_id 核对。
 
+### 日志过大时提取 worker 摘要
+
+对 compare 已生成的输出目录执行（目录内应有 `comparison.json`、`single.jsonl`、`multi.jsonl`）：
+
+```bash
+python tests/special_e2e/summarize_8039_worker.py /path/to/compare-output
+```
+
+只需 Python 标准库，无需模型、设备或重新采集。脚本打印摘要，并写入同目录的 `worker_summary.txt`，
+最多 64 KiB；超过上限会显式标记 `TRUNCATED`。它提取实际 feature 模态、缓存读写摘要、rank 间摘要分组、
+运行配置和跨运行的具体差异路径，不导出视频、完整 token 列表或回答正文。
+
+`D1`、`D2` 等标签在两次运行间共用，代表 shape、dtype、摘要方案及完整哈希的组合；相同标签只表示
+对应的完整/抽样字节摘要相同。`write_vs_read` 检查同一次运行、同一 rank、同一特征的缓存观测；
+缺少事件或摘要、缓存标识不一致、摘要方案不兼容时标 `unknown`，重复读写变化时单独标记。
+rank 分组是记录值的描述，不预设不同 rank 的张量必须相同。哈希无法计算浮点误差大小或证明准确率下降原因。
+
 ## 本地检查
 
 ```bash
