@@ -152,3 +152,42 @@ def test_output_limit_is_explicit_and_below_upload_limit(tmp_path):
     output = SUMMARY["summarize"](tmp_path)
     assert len(output.encode()) <= 64 * 1024
     assert "TRUNCATED" in output
+
+
+@pytest.mark.parametrize("event", sorted(SUMMARY["WORKER_DATA_EVENTS"]))
+def test_data_events_still_require_identity_with_actionable_errors(tmp_path, event):
+    sides = fixture(tmp_path)
+    row = sides["single"]["records"][0]
+    row["event"] = event
+    del row["worker_rank"]
+    write_rows(tmp_path, "single", sides["single"]["records"])
+    with pytest.raises(ValueError, match=f"single.jsonl:1: {event}: missing worker identity fields: worker_rank"):
+        SUMMARY["summarize"](tmp_path)
+
+
+def test_conflicting_requests_report_both_identities_and_lines(tmp_path):
+    sides = fixture(tmp_path)
+    sides["single"]["records"][1]["core_request_id"] = "another-request"
+    write_rows(tmp_path, "single", sides["single"]["records"])
+    with pytest.raises(ValueError, match="conflicting worker identity for rank=0") as error:
+        SUMMARY["summarize"](tmp_path)
+    assert "line 1=" in str(error.value) and "line 2=" in str(error.value)
+    assert "single-core" in str(error.value) and "another-request" in str(error.value)
+
+
+def test_scope_records_are_counted_without_inventing_worker_identity(tmp_path):
+    sides = fixture(tmp_path)
+    data = sides["single"]["records"]
+    for event in (
+        "worker.observation.begin",
+        "worker.observation.end",
+        "worker.observation.error",
+        "worker.limit.begin",
+    ):
+        data.append({"trace_id": "single", "sample_key": "6806999702_8", "event": event})
+    write_rows(tmp_path, "single", data)
+    output = SUMMARY["summarize"](tmp_path)
+    assert '"worker.observation.begin":1' in output
+    assert '"worker.observation.error":1' in output
+    assert not any(line.startswith("rank=None") for line in output.splitlines())
+    assert "write_vs_read=sample_equal" in output

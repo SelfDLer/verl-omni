@@ -19,6 +19,7 @@ or dependency patches are performed here.
 """
 
 import atexit
+import base64
 import contextlib
 import contextvars
 import hashlib
@@ -85,6 +86,10 @@ class _Bytes:
 
 
 class _TokenIds(_Bytes):
+    pass
+
+
+class _NumericSample(_Bytes):
     pass
 
 
@@ -157,6 +162,12 @@ def _finalize(value):
             "complete": complete,
             "sha256": hashlib.sha256(value.value.encode("utf-8")).hexdigest() if complete else None,
         }
+    if isinstance(value, _NumericSample):
+        return {
+            value.field: hashlib.sha256(value.raw).hexdigest(),
+            "sample_data_b64": base64.b64encode(value.raw).decode("ascii"),
+            "sample_byteorder": sys.byteorder,
+        }
     if isinstance(value, _Bytes):
         return {value.field: hashlib.sha256(value.raw).hexdigest()}
     if isinstance(value, dict):
@@ -188,7 +199,7 @@ class _Writer:
         self.host = socket.gethostname()
         self.run = uuid.uuid4().hex
         self.path = Path(directory).absolute() / f"video-v2-{self.host}-{self.pid}-{self.run}.jsonl"
-        self.queue = queue.Queue(maxsize=128)
+        self.queue = queue.Queue(maxsize=512 if os.environ.get("VERL_OMNI_VIDEO_TRACE_VISION", "0") == "1" else 128)
         self.lock = threading.Lock()
         self.pending_bytes = 0
         self.byte_limit = 64 * 1024 * 1024
@@ -414,7 +425,7 @@ def export_context():
 
 
 @contextlib.contextmanager
-def scope(name, *, incoming=None, **identity):
+def scope(name, *, incoming=None, record_boundaries=True, **identity):
     """Track a task without retaining payloads or suppressing its exceptions."""
     global _request_count
     if not enabled():
@@ -448,13 +459,16 @@ def scope(name, *, incoming=None, **identity):
             ctx["selected"] = limit == 0 or 0 < _request_count <= limit
     token = _context.set(ctx)
     try:
-        event(name + ".begin")
+        if record_boundaries:
+            event(name + ".begin")
         yield
     except BaseException as exc:
-        event(name + ".error", error_type=type(exc).__name__, error=str(exc)[:2048])
+        if record_boundaries:
+            event(name + ".error", error_type=type(exc).__name__, error=str(exc)[:2048])
         raise
     finally:
-        event(name + ".end")
+        if record_boundaries:
+            event(name + ".end")
         _context.reset(token)
 
 

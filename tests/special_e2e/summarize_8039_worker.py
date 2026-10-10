@@ -15,10 +15,19 @@
 
 import argparse
 import json
+import runpy
 from collections import Counter, defaultdict
 from pathlib import Path
 
 MAX_OUTPUT_BYTES = 64 * 1024
+DIAGNOSTICS = runpy.run_path(Path(__file__).with_name("video_trace_diagnostics.py"))
+WORKER_DATA_EVENTS = {
+    "worker.receive",
+    "worker.encoder.write",
+    "worker.encoder.read",
+    "worker.gather",
+    "worker.model_input",
+}
 
 
 def compact(value):
@@ -43,7 +52,7 @@ def signature(value):
 
 def read_workers(path):
     rows, traces, samples = [], set(), set()
-    attempts = defaultdict(set)
+    attempts = {}
     counts = Counter()
     with path.open(encoding="utf-8") as stream:
         for number, line in enumerate(stream, 1):
@@ -61,8 +70,22 @@ def read_workers(path):
             if not event.startswith("worker."):
                 continue
             counts[event] += 1
+            # Scope begin/end/error records have no worker_rank. Keep their
+            # counts, but validate identities only for supported data events.
+            if event not in WORKER_DATA_EVENTS:
+                continue
+            missing = [key for key in ("worker_rank", "host", "pid", "core_request_id") if row.get(key) is None]
+            if missing:
+                raise ValueError(f"{path.name}:{number}: {event}: missing worker identity fields: {', '.join(missing)}")
             rank = row.get("worker_rank")
-            attempts[rank].add((row.get("host"), row.get("pid"), row.get("core_request_id")))
+            identity = {key: row[key] for key in ("host", "pid", "core_request_id")}
+            if rank in attempts and attempts[rank][0] != identity:
+                previous, previous_line = attempts[rank]
+                raise ValueError(
+                    f"{path.name}:{number}: {event}: conflicting worker identity for rank={rank}; "
+                    f"line {previous_line}={compact(previous)}, line {number}={compact(identity)}"
+                )
+            attempts.setdefault(rank, (identity, number))
             if event == "worker.receive":
                 rows.append(
                     {key: row.get(key) for key in ("event", "worker_rank", "runtime")}
@@ -80,8 +103,6 @@ def read_workers(path):
                 )
     if len(traces) != 1 or None in traces or len(samples) != 1 or None in samples:
         raise ValueError(f"{path.name}: expected one selected trace and sample; use compare's single.jsonl/multi.jsonl")
-    if any(rank is None or len(ids) != 1 or any(None in item for item in ids) for rank, ids in attempts.items()):
-        raise ValueError(f"{path.name}: worker rank/request identity is missing or ambiguous")
     return rows, dict(counts), next(iter(traces)), next(iter(samples))
 
 
@@ -119,6 +140,7 @@ def summarize(directory):
         "Cross-rank groups describe recorded bytes; rank equality is not assumed by the model architecture.",
         "Hash-only observations cannot measure error size or prove the cause of accuracy loss.",
     ]
+    lines.extend(DIAGNOSTICS["vision_summary"](report))
     aliases = {}
 
     def label(value):
@@ -179,6 +201,8 @@ def summarize(directory):
                     {key: result[key] for key in ("status", "reason", "gaps") if key in result}
                     | {"differences": differences[:4], "omitted_differences": max(0, len(differences) - 4)}
                 )
+                + " "
+                + DIAGNOSTICS["short_metrics"](result)
             )
     output = "\n".join(lines) + "\n"
     if len(output.encode("utf-8")) > MAX_OUTPUT_BYTES:
@@ -188,12 +212,69 @@ def summarize(directory):
     return output
 
 
+def live_health(paths, sample_key):
+    groups = defaultdict(list)
+    files = set()
+    invalid = 0
+    for path in paths:
+        files.update(path.rglob("video-v2-*.jsonl") if path.is_dir() else [path])
+    for path in sorted(files):
+        with path.open(encoding="utf-8") as stream:
+            for line in stream:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    invalid += 1  # A running writer may not have finished its last line.
+                    continue
+                if not isinstance(row, dict) or str(row.get("sample_key")) != sample_key:
+                    continue
+                if not row.get("event", "").startswith("worker.vision."):
+                    continue
+                key = (row.get("trace_id"), row.get("host"), row.get("pid"), row.get("worker_rank"))
+                kept = {
+                    name: row[name]
+                    for name in ("event", "worker_rank", "checkpoint", "hooks", "config", "reason")
+                    if name in row
+                }
+                if row["event"] == "worker.vision.weights":
+                    kept["values"] = dict.fromkeys(row.get("values", {}))
+                groups[key].append(kept)
+    lines = [f"Vision capture health: sample={sample_key}, files={len(files)}, invalid_or_partial_lines={invalid}"]
+    if not groups:
+        lines.append("NO_VISION_EVENTS: target not reached, vision not enabled, worker hooks missing, or files absent.")
+    for (trace_id, host, pid, rank), rows in sorted(groups.items(), key=lambda item: repr(item[0])):
+        coverage = DIAGNOSTICS["vision_coverage"]({"records": rows})[str(rank)]
+        failed = [key for key, value in coverage["hooks"].items() if value.get("status") != "installed"]
+        lines.append(
+            f"trace={trace_id} {host}:{pid} rank={rank} "
+            f"observed={len(coverage['observed'])} weights={coverage['weights']}"
+        )
+        lines.append(f"  missing={coverage['missing_checkpoints']} unavailable={failed}")
+        lines.extend(f"  gap {item['checkpoint']}: {item['reason']}" for item in coverage["gaps"][:4])
+    lines.append(
+        "During an active request, missing stages may still arrive. Coverage does not establish numeric equality."
+    )
+    return "\n".join(lines) + "\n"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "directory", type=Path, help="Compare output directory containing comparison.json and both JSONLs"
+        "directory", type=Path, nargs="?", help="Compare output directory containing comparison.json and both JSONLs"
     )
+    parser.add_argument("--raw", type=Path, nargs="+", help="Inspect live raw trace directories/files without compare")
+    parser.add_argument("--sample-key", help="Required with --raw")
     args = parser.parse_args()
+    if args.raw:
+        if args.directory or not args.sample_key:
+            parser.error("--raw requires --sample-key and cannot be combined with a compare directory")
+        try:
+            print(live_health(args.raw, args.sample_key), end="")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            parser.error(str(exc))
+        return
+    if args.directory is None:
+        parser.error("provide a compare directory or --raw with --sample-key")
     try:
         output = summarize(args.directory)
     except (OSError, ValueError, KeyError, TypeError) as exc:

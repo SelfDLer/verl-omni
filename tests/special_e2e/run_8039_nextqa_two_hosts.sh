@@ -35,6 +35,19 @@ for name in AGENT_NUM_WORKERS VAL_MAX_SAMPLES; do
     fi
 done
 
+if [[ ${VERL_OMNI_VIDEO_TRACE_VISION:-0} == 1 ]]; then
+    if [[ -z ${VERL_OMNI_VIDEO_TRACE_DIR:-} || -z ${VERL_OMNI_VIDEO_TRACE_SAMPLE_KEY:-} ||
+          ${VERL_OMNI_VIDEO_TRACE_STAGE:-boundary} != worker || ${VERL_OMNI_VIDEO_TRACE_DEVICE_SAMPLE:-0} != 1 ]]; then
+        echo "Vision diagnosis requires TRACE_DIR, SAMPLE_KEY, STAGE=worker and DEVICE_SAMPLE=1 (VERL_OMNI_VIDEO_TRACE_ prefix)." >&2
+        exit 2
+    fi
+    if [[ ! ${VERL_OMNI_VIDEO_TRACE_NUMERIC_SAMPLES:-1024} =~ ^[1-9][0-9]*$ ]] ||
+        (( ${VERL_OMNI_VIDEO_TRACE_NUMERIC_SAMPLES:-1024} > 4096 )); then
+        echo "VERL_OMNI_VIDEO_TRACE_NUMERIC_SAMPLES must be between 1 and 4096." >&2
+        exit 2
+    fi
+fi
+
 command=(bash examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_npu_nextqa_v1.sh
     "++ray_kwargs.ray_init.address=${RAY_ADDRESS}"
     "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_USE_EXTERNAL_MODULES=verl_omni"
@@ -55,6 +68,8 @@ if [[ -n ${VERL_OMNI_VIDEO_TRACE_DIR:-} ]]; then
         "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_SAMPLE_KEY='${VERL_OMNI_VIDEO_TRACE_SAMPLE_KEY:-}'"
         "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_STAGE='${VERL_OMNI_VIDEO_TRACE_STAGE:-boundary}'"
         "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_DEVICE_SAMPLE='${VERL_OMNI_VIDEO_TRACE_DEVICE_SAMPLE:-0}'"
+        "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_VISION='${VERL_OMNI_VIDEO_TRACE_VISION:-0}'"
+        "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_NUMERIC_SAMPLES='${VERL_OMNI_VIDEO_TRACE_NUMERIC_SAMPLES:-1024}'"
         "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_MODE='${VERL_OMNI_VIDEO_TRACE_MODE:-metadata}'"
         "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_MAX_BYTES='${VERL_OMNI_VIDEO_TRACE_MAX_BYTES:-8388608}'"
         "++ray_kwargs.ray_init.runtime_env.env_vars.VERL_OMNI_VIDEO_TRACE_MAX_TOKENS='${VERL_OMNI_VIDEO_TRACE_MAX_TOKENS:-32768}'"

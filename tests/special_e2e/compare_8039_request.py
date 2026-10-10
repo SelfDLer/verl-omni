@@ -16,10 +16,13 @@
 import argparse
 import hashlib
 import json
+import runpy
 import sys
 from array import array
 from collections import defaultdict
 from pathlib import Path
+
+_DIAGNOSTICS = runpy.run_path(Path(__file__).with_name("video_trace_diagnostics.py"))
 
 _STAGES = (
     ("agent.source.message", ("text",)),
@@ -252,6 +255,7 @@ def _trees(a, b, *, require_arrays=False):
     differences = []
     gaps = {"single": au, "multi": bu}
     sampled = False
+    numeric = {}
     for path in sorted(av.keys() | bv.keys()):
         # Truncated/unsupported subtrees cannot establish structural differences.
         if any(path == p or path.startswith((p + ".", p + "[")) for p in au.keys() | bu.keys()):
@@ -278,8 +282,20 @@ def _trees(a, b, *, require_arrays=False):
         sampled |= mode == "sample"
         if x[field] != y[field]:
             differences.append({"path": path + "." + field, "single": x[field], "multi": y[field]})
+        if x.get("sample_data_b64") is not None or y.get("sample_data_b64") is not None:
+            numeric[path] = _DIAGNOSTICS["numeric_difference"](x, y)
+        for side_value, destination in ((x, au), (y, bu)):
+            full = side_value.get("full_cpu")
+            if full and full.get("digest_status") != "full":
+                destination[path + ".full_cpu"] = full.get("digest_status", "missing_full_cpu_digest")
+        xf, yf = x.get("full_cpu", {}), y.get("full_cpu", {})
+        if xf.get("sha256") and yf.get("sha256") and xf["sha256"] != yf["sha256"]:
+            differences.append({"path": path + ".full_cpu.sha256", "single": xf["sha256"], "multi": yf["sha256"]})
     status = "different" if differences else "unknown" if au or bu else "sample_equal" if sampled else "equal"
-    return {"status": status, "differences": differences, "gaps": gaps}
+    result = {"status": status, "differences": differences, "gaps": gaps}
+    if numeric:
+        result["numeric"] = numeric
+    return result
 
 
 def _compare_stage(left, right, stage, components, tokenizer):
@@ -557,6 +573,13 @@ def compare(left, right, tokenizer=None):
         ),
         "first_difference_by_component": first,
         "stages": stages,
+        "vision_stages": _DIAGNOSTICS["vision_stages"](left, right, _trees),
+        "vision_coverage": {
+            label: _DIAGNOSTICS["vision_coverage"](side) for label, side in (("single", left), ("multi", right))
+        },
+        "vision_flow": {
+            label: _DIAGNOSTICS["vision_flow"](side, _trees) for label, side in (("single", left), ("multi", right))
+        },
         "worker_coverage": {label: _worker_coverage(side) for label, side in (("single", left), ("multi", right))}
         if deep
         else {},
@@ -671,6 +694,7 @@ def markdown(report):
     lines.extend(
         ["", "equal = recorded values match; sample_equal = sampled values match; unknown = insufficient evidence."]
     )
+    lines.extend(_DIAGNOSTICS["vision_summary"](report))
     lines.extend(["", "Details and source file/line references are in comparison.json.", ""])
     lines.extend(f"- {item}" for item in report["limitations"])
     return "\n".join(lines) + "\n"

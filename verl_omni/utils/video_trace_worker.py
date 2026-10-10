@@ -28,6 +28,8 @@ _TRACE_DEFAULTS = {
     "VERL_OMNI_VIDEO_TRACE_STAGE": "boundary",
     "VERL_OMNI_VIDEO_TRACE_MODE": "metadata",
     "VERL_OMNI_VIDEO_TRACE_DEVICE_SAMPLE": "0",
+    "VERL_OMNI_VIDEO_TRACE_VISION": "0",
+    "VERL_OMNI_VIDEO_TRACE_NUMERIC_SAMPLES": "1024",
     "VERL_OMNI_VIDEO_TRACE_MAX_BYTES": "8388608",
     "VERL_OMNI_VIDEO_TRACE_MAX_TOKENS": "32768",
 }
@@ -38,7 +40,11 @@ def enabled():
 
 
 def snapshot(value):
-    """Device reads require a separate opt-in; copy at most 256 logical elements."""
+    """Device reads require opt-in; vision mode also retains bounded numeric samples."""
+    if os.environ.get("VERL_OMNI_VIDEO_TRACE_VISION", "0") == "1":
+        from verl_omni.utils.video_trace_numeric import snapshot as numeric_snapshot
+
+        return numeric_snapshot(value)
     if value is None or os.environ.get("VERL_OMNI_VIDEO_TRACE_DEVICE_SAMPLE", "0") != "1":
         return value
     if type(value).__module__.split(".")[0] != "torch" or str(value.device) == "cpu":
@@ -93,17 +99,24 @@ class WorkerObserver:
         self.rank = getattr(worker, "rank", None)
         self.local_rank = getattr(worker, "local_rank", None)
         self.runtime = {}
+        self.vision = None
         for package in ("vllm", "vllm-omni", "vllm-ascend", "torch", "torch-npu"):
             try:
                 self.runtime[package] = importlib.metadata.version(package)
             except importlib.metadata.PackageNotFoundError:
                 self.runtime[package] = None
         for config_name, keys in (
-            ("model_config", ("model", "seed", "dtype", "revision", "enforce_eager")),
-            ("parallel_config", ("tensor_parallel_size", "pipeline_parallel_size", "data_parallel_size")),
+            ("model_config", ("model", "seed", "dtype", "revision", "enforce_eager", "quantization")),
+            (
+                "parallel_config",
+                ("tensor_parallel_size", "pipeline_parallel_size", "data_parallel_size", "enable_expert_parallel"),
+            ),
             ("cache_config", ("enable_prefix_caching",)),
+            ("compilation_config", ("mode", "backend", "cudagraph_mode")),
         ):
             config = getattr(self.runner, config_name, None)
+            if config is None:
+                config = getattr(getattr(self.runner, "vllm_config", None), config_name, None)
             self.runtime[config_name] = {key: str(getattr(config, key, None)) for key in keys}
         self.runtime["runner_class"] = f"{type(self.runner).__module__}.{type(self.runner).__qualname__}"
 
@@ -129,14 +142,20 @@ class WorkerObserver:
             )
 
     def emit(self, entry, name, **fields):
-        if entry["events"] >= 256:
-            if entry["events"] == 256:
+        limit = 1024 if self.vision is not None else 256
+        if entry["events"] >= limit:
+            if entry["events"] == limit:
                 with trace.scope("worker.limit", incoming=entry["context"]):
                     trace.event("trace.worker_limit", core_request_id=entry["id"], worker_rank=self.rank)
             entry["events"] += 1
             return
         entry["events"] += 1
-        with trace.scope("worker.observation", incoming=entry["context"], core_request_id=entry["id"]):
+        with trace.scope(
+            "worker.observation",
+            incoming=entry["context"],
+            core_request_id=entry["id"],
+            record_boundaries=self.vision is None,
+        ):
             trace.event(name, core_request_id=entry["id"], worker_rank=self.rank, local_rank=self.local_rank, **fields)
 
     def receive(self, arguments, result=None):
@@ -201,7 +220,7 @@ class WorkerObserver:
         identifier = arguments["mm_hash"]
         value = arguments["output"] if write else result
         for entry, state, _, count, start in self.active:
-            if entry["events"] >= 256:
+            if entry["events"] >= (1024 if self.vision is not None else 256):
                 self.emit(entry, "trace.worker_limit")
                 continue
             for index, feature in enumerate(state.mm_features):
@@ -217,11 +236,13 @@ class WorkerObserver:
                         cache_present=value is not None,
                         embedding=snapshot(value),
                     )
+                    if self.vision is not None and feature.modality == "video":
+                        self.vision.safe(self.vision.cache_parts, entry, index, value, write)
 
     def gather(self, arguments, result):
         embeddings, mask = result
         for entry, _, offset, count, start in self.active:
-            if entry["events"] >= 256:
+            if entry["events"] >= (1024 if self.vision is not None else 256):
                 self.emit(entry, "trace.worker_limit")
                 continue
             self.emit(
@@ -238,7 +259,7 @@ class WorkerObserver:
     def merged(self, arguments, result):
         input_ids, embeds, positions = result[:3]
         for entry, state, offset, count, start in self.active:
-            if entry["events"] >= 256:
+            if entry["events"] >= (1024 if self.vision is not None else 256):
                 self.emit(entry, "trace.worker_limit")
                 continue
             if embeds is not None and len(embeds.shape) != 2:
@@ -305,12 +326,16 @@ class WorkerObserver:
                 if preprocess:
                     self.active = []
                     self.safe(lambda: self.active.extend(self.spans(arguments["scheduler_output"])))
+                    if self.vision is not None:
+                        self.vision.safe(self.vision.prepare)
                 try:
                     if before:
                         self.safe(before, arguments)
                     result = original(*args, **kwargs)
                     if after:
                         self.safe(after, arguments, result)
+                    if preprocess and self.vision is not None:
+                        self.vision.safe(self.vision.coverage)
                     return result
                 finally:
                     if preprocess:
@@ -326,6 +351,25 @@ class WorkerObserver:
             trace.event("trace.install", force=True, boundary="worker." + name, status="unavailable", error=str(exc))
 
 
+def _install_vision(observer):
+    if observer.vision is not None or os.environ.get("VERL_OMNI_VIDEO_TRACE_VISION", "0") != "1":
+        return
+    from verl_omni.utils.video_trace_vision import VisionObserver
+
+    observer.vision = VisionObserver(observer)
+    try:
+        observer.vision.install()
+        unavailable = [key for key, value in observer.vision.hooks.items() if value.get("status") != "installed"]
+        observer.hooks["vision"] = {
+            "status": "partial" if unavailable else "installed",
+            "hook_count": len(observer.vision.hooks),
+            "unavailable": unavailable,
+        }
+    except Exception as exc:
+        observer.hooks["vision"] = {"status": "unavailable", "error": str(exc)}
+        observer.vision.hooks["vision"] = observer.hooks["vision"]
+
+
 def install(worker):
     if not enabled() or getattr(worker, "_video_observer", None) is not None:
         return
@@ -339,6 +383,7 @@ def install(worker):
         observer.attach(
             "_get_encoder_output_from_cache", after=lambda args, result: observer.cache(args, result, False)
         )
+        _install_vision(observer)
     except Exception as exc:
         trace.event("trace.install", force=True, boundary="worker", status="unavailable", error=str(exc))
 
@@ -359,6 +404,7 @@ def register_worker(worker, request_id, context, trace_options=None):
         "trace_dir": os.environ.get("VERL_OMNI_VIDEO_TRACE_DIR", ""),
         "trace_stage": os.environ.get("VERL_OMNI_VIDEO_TRACE_STAGE", "boundary"),
         "device_sample": os.environ.get("VERL_OMNI_VIDEO_TRACE_DEVICE_SAMPLE", "0"),
+        "vision": os.environ.get("VERL_OMNI_VIDEO_TRACE_VISION", "0"),
         "worker_cwd": os.getcwd(),
         "status": "disabled",
     }
@@ -368,6 +414,7 @@ def register_worker(worker, request_id, context, trace_options=None):
     observer = getattr(worker, "_video_observer", None)
     if observer is None:
         return {**reply, "status": "unavailable"}
+    _install_vision(observer)
     observer.register(request_id, context)
     return {
         **reply,

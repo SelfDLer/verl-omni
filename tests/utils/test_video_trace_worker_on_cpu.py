@@ -14,6 +14,7 @@
 
 import ast
 import asyncio
+import json
 import os
 import sys
 from types import SimpleNamespace as NS
@@ -132,6 +133,29 @@ def test_exact_global_id_selected_after_batch_reordering_and_original_results(wo
     expected = trace._finalize(trace._array(runner.result[1][3:6], "sample"))
     assert merged["embedding"]["sample_sha256"] == expected["sample_sha256"]
     assert {r["modality"] for r in records if r["event"] == "worker.encoder.read"} == {"audio", "video"}
+
+
+def test_real_worker_events_can_be_compared_and_summarized(worker_module, trace, tmp_path):
+    worker, scheduler, _ = setup(worker_module, trace)
+    worker.model_runner._update_states(scheduler)
+    worker.model_runner._preprocess(scheduler)
+    observed = rows(trace)
+    boundaries = [row for row in observed if row["event"] == "worker.observation.begin"]
+    assert boundaries and all("worker_rank" not in row for row in boundaries)
+    compare = load("worker_compare_test", "tests/special_e2e/compare_8039_request.py")
+    summary = load("worker_summary_test", "tests/special_e2e/summarize_8039_worker.py")
+    selected = compare.load_request([trace._sink.path], "6806999702_8")
+    report = compare.compare(selected, selected)
+    (tmp_path / "comparison.json").write_text(json.dumps(report), encoding="utf-8")
+    for side in ("single", "multi"):
+        (tmp_path / f"{side}.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in selected["records"]), encoding="utf-8"
+        )
+    output = summary.summarize(tmp_path)
+    assert "write_vs_read=sample_equal" in output
+    assert "modality=['video']" in output
+    assert "modality=['audio']" in output
+    assert "worker.observation.begin" in output
 
 
 def test_cache_hit_observed_without_claiming_encoder_ran(worker_module, trace):

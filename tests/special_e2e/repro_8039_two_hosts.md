@@ -438,6 +438,78 @@ python tests/special_e2e/summarize_8039_worker.py /path/to/compare-output
 缺少事件或摘要、缓存标识不一致、摘要方案不兼容时标 `unknown`，重复读写变化时单独标记。
 rank 分组是记录值的描述，不预设不同 rank 的张量必须相同。哈希无法计算浮点误差大小或证明准确率下降原因。
 
+`worker.observation.begin/end/error` 等作用域事件没有 `worker_rank`，只计数，不参与数据事件的身份校验。
+旧版摘要脚本会因此误报 `worker rank/request identity is missing or ambiguous`；更新脚本后直接重新分析
+原 compare 输出即可，无需重跑模型。实际数据事件缺少身份或同一 rank 出现多个请求时，仍会报错并列出事件、行号和具体字段。
+
+### 一轮实验采集视觉编码的多阶段证据
+
+当差异已到达 `worker.encoder.write`，使用以下观测配置运行原来的单机、双机命令。
+保持原有数据、采样和并发设置；两轮使用不同的 TRACE_DIR，继续观察同一 sample key：
+
+```bash
+export VERL_OMNI_VIDEO_TRACE_SAMPLE_KEY=6806999702_8
+export VERL_OMNI_VIDEO_TRACE_STAGE=worker
+export VERL_OMNI_VIDEO_TRACE_MODE=sample
+export VERL_OMNI_VIDEO_TRACE_DEVICE_SAMPLE=1
+export VERL_OMNI_VIDEO_TRACE_VISION=1
+export VERL_OMNI_VIDEO_TRACE_NUMERIC_SAMPLES=1024
+export VERL_OMNI_VIDEO_TRACE_MAX_BYTES=67108864
+
+# 沿用已验证的 Ray、模型、数据和其他 Hydra 参数。
+VERL_OMNI_VIDEO_TRACE_DIR=/path/to/trace-single NNODES=1 \
+  bash tests/special_e2e/run_8039_nextqa_two_hosts.sh
+VERL_OMNI_VIDEO_TRACE_DIR=/path/to/trace-multi NNODES=2 \
+  bash tests/special_e2e/run_8039_nextqa_two_hosts.sh
+```
+
+这组开关只改变观测，不过滤实际推理样本，不重放请求，不改变采样、模型权重、计算精度或奖励。
+启动脚本检查关键开关，避免开启 VISION 却没有开启 worker/device 采集。**设备读取会同步并改变时序**；
+不能宣称无扰动，也不能用 CPU 测试代替真实 Ascend 验证。
+
+新增证据覆盖如下路径：
+
+| 位置 | 记录内容 |
+| --- | --- |
+| `source` | 调度器实际交给编码器的目标视频数据、完整 CPU 哈希（在字节上限内）和数值抽样 |
+| `video.input` / `visual.input` | 组批后的目标视频切片、实际 grid、同批成员和偏移、转换 dtype 前后输入 |
+| patch / position | patch embedding 和位置插值输出 |
+| 每个视觉 block | block 输入/输出、norm1/norm2、attention、MLP；接口存在时还记录 QKV/proj、attention kernel 的 Q/K/V 与输出、MLP 两个线性层 |
+| attention 元信息 | 各层实际 rotary 输入、cu_seqlens、sequence_lengths、max_seqlen；批次边界作为上下文保留，不冒充单样本相等 |
+| merger / video output | 主 merger、各 DeepStack merger、拼接后输出、按视频切分后的输出 |
+| encoder cache | 原有写入/读取观测及按运行时配置拆分的主视觉/DeepStack 分量 |
+| merge / DeepStack | 实际 merge token IDs 与期望 token IDs、mask、视觉 token 位置的最终主 embedding、DeepStack 设置和取用 |
+| 实际权重和代码 | 当前视觉模块全部参数/缓冲区的元信息及每张量 64 个数值抽样、实际类/方法源码哈希、视觉配置和 worker 版本/并行配置 |
+
+数值以原 dtype 的有界字节样本保存，离线解码支持 BF16，不在模型运行时转换整块 embedding。
+普通观测每张量默认 1024 个元素，最多 4096 个；权重每张量 64 个。
+CPU 完整哈希受 MAX_BYTES 限制，不会将整块 NPU 张量搬到 CPU；CPU 复制和哈希本身仍有成本。
+每次目标请求每 worker 最多 1024 个数据事件，每特征/观测点最多 4 次，每类权重最多 768 个张量、视觉 block 最多 64 层。
+写入队列最多 512 项，原始字节预算仍为 64 MiB。超限、缺失接口或未知布局必须视为观测缺口。
+
+目标视频按调度器成员顺序及实际 grid 对齐，不按张量形状猜测请求身份；不支持的重排/分片布局记录 gap。
+此外离线检查同次运行内 source → video input → visual input、visual output → 视频切分 → cache 写入/读取 → 主 embedding，
+可发现同样 grid 下的内容错配。视频到主 embedding 的检查还要求实际 merge token IDs 完整验证；
+输入分块不同、重复记录或 token 抽样不足时保留 unknown。
+
+**无需等实验结束才检查采集是否工作。** 目标样本执行后，可在运行中检查原始日志（不依赖 comparison 文件）：
+
+```bash
+python tests/special_e2e/summarize_8039_worker.py \
+  --raw /path/to/trace-multi --sample-key 6806999702_8
+```
+
+两机非共享目录时可分别执行；共享目录自动递归读取。输出每个 trace/host/pid/rank 的实际观测、权重数量、
+缺失阶段和接口失败。目标样本尚未执行完时 missing 可能是暂时的；只有 installed 不代表采集成功。
+如果模型走预编译/图重放路径而跳过 Python 方法，缺失层会显示出来；脚本不自动关闭编译或改变原实验。
+
+两轮结束后，按原命令运行 `compare_8039_request.py`，再运行 `summarize_8039_worker.py /path/to/compare-output`。
+`comparison.json` 新增 `vision_stages`、`vision_coverage` 和 `vision_flow`。Markdown 和小摘要按 block 汇总，
+展开第一个出现差异的 block；完整逐层、逐 rank 明细保留在 JSON。
+数值指标包括不同元素数、最大/平均绝对误差、相对 L2、cosine、NaN/Inf 和绝对误差超过 0.001/0.01/0.1 的计数。
+这些阈值只描述误差，不是正确性判据。哈希不同仍标 different，微小浮点差异不会被自动判为数据串扰；
+抽样一致也不能证明完整权重/张量相等。尚未覆盖语言模型内部层、最终 logits 和 NPU kernel 内部运算。
+
 ## 本地检查
 
 ```bash
