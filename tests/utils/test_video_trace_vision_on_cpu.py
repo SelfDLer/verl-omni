@@ -484,7 +484,11 @@ def test_logical_rows_match_cache_sampling_without_copying_full_embeddings(numer
     assert empty["sample_count"] == 0 and empty["sample_data_b64"] == ""
 
 
-def test_accelerator_reads_require_opt_in_and_transfer_only_bounded_samples(numeric, trace, monkeypatch):
+@pytest.mark.parametrize("tensor_module", ["torch", "vllm.model_executor.parameter"])
+@pytest.mark.parametrize("vision", [False, True])
+def test_accelerator_reads_require_opt_in_and_transfer_only_bounded_samples(
+    numeric, worker_module, trace, monkeypatch, tensor_module, vision
+):
     transfers = []
 
     class Tensor:
@@ -497,6 +501,9 @@ def test_accelerator_reads_require_opt_in_and_transfer_only_bounded_samples(nume
 
         def stride(self):
             return tuple(step // self.value.itemsize for step in self.value.strides)
+
+        def numel(self):
+            return self.value.size
 
         def detach(self):
             return self
@@ -520,16 +527,29 @@ def test_accelerator_reads_require_opt_in_and_transfer_only_bounded_samples(nume
         def numpy(self):
             return self.value
 
-    monkeypatch.setitem(sys.modules, "torch", NS(tensor=lambda x, device: np.asarray(x), uint8=np.uint8))
+    monkeypatch.setitem(sys.modules, "torch", NS(Tensor=Tensor, tensor=lambda x, device: np.asarray(x), uint8=np.uint8))
     monkeypatch.setenv("VERL_OMNI_VIDEO_TRACE_STAGE", "worker")
+    monkeypatch.setenv("VERL_OMNI_VIDEO_TRACE_VISION", "1" if vision else "0")
     trace.install_memory(NS(rank=0, wake_up=lambda: None))
-    value = Tensor(np.arange(100_000, dtype=np.float32).reshape(1000, 100)[:, ::2])
+    parameter = type("ModelWeightParameter", (Tensor,), {"__module__": tensor_module})
+    source = np.arange(100_000, dtype=np.float32).reshape(1000, 100)[:, ::2]
+    value = parameter(source)
     monkeypatch.setenv("VERL_OMNI_VIDEO_TRACE_DEVICE_SAMPLE", "0")
-    assert numeric.snapshot(value)["digest_status"] == "skipped_non_cpu"
+    skipped = numeric.snapshot(value) if vision else trace._freeze(worker_module.snapshot(value), "sample")
+    assert skipped["digest_status"] == "skipped_non_cpu"
     assert transfers == []
     assert trace._memory_recorder.samples_started == 0
     monkeypatch.setenv("VERL_OMNI_VIDEO_TRACE_DEVICE_SAMPLE", "1")
-    result = trace._finalize(numeric.snapshot(value, limit=99999, full_cpu=True))
-    assert result["sample_count"] == 4096 and transfers == [4096 * 4]
+    result = trace._finalize(
+        numeric.snapshot(value, limit=99999, full_cpu=True) if vision else worker_module.snapshot(value)
+    )
+    count = 4096 if vision else 256
+    assert result["sample_count"] == count and transfers == [count * 4]
+    indices = np.linspace(0, source.size - 1, count, dtype=np.int64)
+    expected = source.reshape(-1)[indices].tobytes()
+    assert result["sample_sha256"] == hashlib.sha256(expected).hexdigest()
+    assert result["shape"] == list(source.shape)
+    if vision:
+        assert base64.b64decode(result["sample_data_b64"]) == expected
     assert "full_cpu" not in result
     assert trace._memory_recorder.samples_started == trace._memory_recorder.samples_completed == 1

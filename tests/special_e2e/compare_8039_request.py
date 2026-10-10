@@ -245,9 +245,9 @@ def _trees(a, b, *, require_arrays=False):
     _flatten(b, "$", bv, bu, ba)
     if require_arrays:
         if not aa:
-            au["$"] = "no_array_snapshot"
+            au.setdefault("$", "no_array_snapshot")
         if not ba:
-            bu["$"] = "no_array_snapshot"
+            bu.setdefault("$", "no_array_snapshot")
         for values, unknown in ((av, au), (bv, bu)):
             for path, value in values.items():
                 if value is None and path.endswith((".data", ".pixel_values_videos")):

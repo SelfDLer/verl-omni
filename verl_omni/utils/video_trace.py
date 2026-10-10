@@ -448,15 +448,17 @@ def flush(timeout=1.0):
 atexit.register(flush)
 
 
+def _is_torch_tensor(value):
+    # vLLM parameter subclasses live outside torch; do not import torch for tracing.
+    return isinstance(value, getattr(sys.modules.get("torch"), "Tensor", ()))
+
+
 def _array(value, mode):
-    module = type(value).__module__.split(".")[0]
-    if module not in ("numpy", "torch") or not hasattr(value, "shape"):
+    is_torch = _is_torch_tensor(value)
+    if not is_torch and not isinstance(value, getattr(sys.modules.get("numpy"), "ndarray", ())):
         return None
     import numpy as np
 
-    is_torch = module == "torch"
-    if not is_torch and not isinstance(value, np.ndarray):
-        return None
     shape = list(value.shape)
     device = str(value.device) if is_torch else "cpu"
     result = {

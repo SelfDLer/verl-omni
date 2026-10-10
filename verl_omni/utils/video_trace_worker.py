@@ -47,7 +47,7 @@ def snapshot(value):
         return numeric_snapshot(value)
     if value is None or os.environ.get("VERL_OMNI_VIDEO_TRACE_DEVICE_SAMPLE", "0") != "1":
         return value
-    if type(value).__module__.split(".")[0] != "torch" or str(value.device) == "cpu":
+    if not trace._is_torch_tensor(value) or str(value.device) == "cpu":
         return value
     import numpy as np
     import torch

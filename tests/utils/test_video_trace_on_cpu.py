@@ -200,7 +200,8 @@ def test_message_observation_never_consumes_an_iterator_or_calls_tokenizer(trace
     assert config["tokenizer_template"]["complete"]
 
 
-def test_metadata_never_reads_tensor_contents(trace):
+@pytest.mark.parametrize("tensor_module", ["torch", "vllm.model_executor.parameter"])
+def test_metadata_never_reads_tensor_contents(trace, monkeypatch, tensor_module):
     class Tensor:
         __module__ = "torch"
         shape = (12, 3, 256, 352)
@@ -216,8 +217,10 @@ def test_metadata_never_reads_tensor_contents(trace):
         def cpu(self):
             pytest.fail("diagnostics initiated a device transfer")
 
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(Tensor=Tensor))
+    parameter = type("ModelWeightParameter", (Tensor,), {"__module__": tensor_module})
     with trace.scope("request"):
-        trace.event("input", video=Tensor())
+        trace.event("input", video=parameter())
     record = next(r for r in rows(trace) if r["event"] == "input")
     assert record["video"]["digest_status"] == "metadata_only"
     assert record["video"]["shape"] == [12, 3, 256, 352]
@@ -239,6 +242,7 @@ def test_device_data_is_never_read_even_with_hashing(trace, monkeypatch, mode):
         def detach(self):
             pytest.fail("device tensor read")
 
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(Tensor=Tensor))
     with trace.scope("request"):
         trace.event("input", video=Tensor())
     assert next(r for r in rows(trace) if r["event"] == "input")["video"]["digest_status"] == "skipped_non_cpu"
@@ -636,9 +640,15 @@ def test_agent_proxy_rpc_identity_empty_result_and_merge(trace, monkeypatch):
 
 def test_torch_cpu_bfloat16_and_scalar(trace, monkeypatch):
     torch = pytest.importorskip("torch")
+
+    class ModelWeightParameter(torch.nn.Parameter):
+        __module__ = "vllm.model_executor.parameter"
+
     for mode in ("sample", "full"):
         monkeypatch.setenv("VERL_OMNI_VIDEO_TRACE_MODE", mode)
         for tensor in (torch.arange(24, dtype=torch.bfloat16).reshape(4, 6).T, torch.tensor(1.0)):
             snapshot = trace._array(tensor, mode)
             assert snapshot["digest_status"] == mode
             assert isinstance(snapshot["fingerprint"].raw, bytes)
+            parameter_snapshot = trace._array(ModelWeightParameter(tensor, requires_grad=False), mode)
+            assert parameter_snapshot["fingerprint"].raw == snapshot["fingerprint"].raw

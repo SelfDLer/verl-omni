@@ -524,6 +524,25 @@ python tests/special_e2e/summarize_8039_worker.py \
 无法通过离线脚本补出。如果共有证据不能定位，再决定是否补采 multi 内部层。
 比较前保持样本、模型、采样参数、设备采样数量等原实验设置一致。
 
+### 权重比较显示 no_array_snapshot
+
+这表示没有采集到可比较的数组，不表示权重相等。旧版埋点按类的模块名识别 Torch 张量，
+会漏掉定义在 `vllm.model_executor.parameter` 等模块里的参数子类。
+修复版按 `torch.Tensor` 的继承关系识别；设备读取仍要求 `DEVICE_SAMPLE=1`，权重仍只采样每张量 64 个元素。
+离线比较也保留原始 `unsupported` 类型说明，避免统一覆盖成 `no_array_snapshot`。
+
+已有日志无法补回漏采的权重值，但已记录的参数差异仍可分析。无需重跑模型，先重新生成摘要：
+
+```bash
+python tests/special_e2e/summarize_8039_worker.py /path/to/compare-output
+```
+
+目录中应包含原来的 `comparison.json`、`single.jsonl` 和 `multi.jsonl`。
+生成的 `worker_summary.txt` 优先展示最多 64 项参数差异，再列最多 8 项 unknown 的原因；
+其余数量明确标注，完整明细仍在 `comparison.json`，文件总上限仍为 64 KiB。
+若旧 comparison 已丢失具体的 unsupported 类型说明，需要用原始日志重新运行 compare 才能恢复该说明；
+这也不需要重新运行模型。
+
 ### 唤醒 OOM 时的显存时序
 
 设置非空 `VERL_OMNI_VIDEO_TRACE_DIR` 且 `VERL_OMNI_VIDEO_TRACE_STAGE=worker` 时，

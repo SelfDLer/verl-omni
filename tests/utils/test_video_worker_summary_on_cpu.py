@@ -154,6 +154,34 @@ def test_output_limit_is_explicit_and_below_upload_limit(tmp_path):
     assert "TRUNCATED" in output
 
 
+def test_weight_differences_are_shown_before_bounded_unknown_examples(tmp_path):
+    fixture(tmp_path)
+    report_path = tmp_path / "comparison.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    stages = []
+    unsupported = {"unsupported": "vllm.model_executor.parameter.ModelWeightParameter"}
+    for index in range(464 + 27):
+        missing = index < 464
+        checkpoint = f"weight.parameter.{'missing' if missing else 'changed'}.{index}"
+        result = COMPARE["_trees"](
+            unsupported if missing else snapshot("single"),
+            unsupported if missing else snapshot("multi"),
+            require_arrays=True,
+        )
+        stages.append({"checkpoint": checkpoint, "stage": checkpoint, "components": {"value": result}})
+    report["vision_stages"] = stages
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    output = SUMMARY["summarize"](tmp_path)
+    assert "weight comparisons different: 27" in output
+    assert "weight comparisons unknown: 464" in output
+    for row in stages[464:]:
+        assert f"{row['stage']}: different" in output
+    assert output.index("weight.parameter.changed.") < output.index("weight.parameter.missing.")
+    assert "omitted_weight_unknown_details=456" in output
+    assert "unsupported: vllm.model_executor.parameter.ModelWeightParameter" in output
+    assert len(output.encode()) < 64 * 1024
+
+
 @pytest.mark.parametrize("event", sorted(SUMMARY["WORKER_DATA_EVENTS"]))
 def test_data_events_still_require_identity_with_actionable_errors(tmp_path, event):
     sides = fixture(tmp_path)

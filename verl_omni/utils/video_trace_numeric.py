@@ -50,7 +50,7 @@ def snapshot(value, limit=None, full_cpu=False, row_indices=None):
     coords = np.unravel_index(indices, shape) if count and value.ndim else ()
     if row_indices is not None and coords:
         coords = (np.asarray(row_indices, dtype=np.int64)[coords[0]], *coords[1:])
-    if type(value).__module__.split(".")[0] == "torch":
+    if trace._is_torch_tensor(value):
         import torch
 
         with trace.device_sample(value) if device else contextlib.nullcontext():

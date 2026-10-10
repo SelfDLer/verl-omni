@@ -353,12 +353,19 @@ def vision_summary(report):
         lines.append(
             f"weight comparisons {status}: {sum(row['components']['value']['status'] == status for row in weights)}"
         )
-    bad = [row for row in weights if row["components"]["value"]["status"] not in ("equal", "sample_equal")]
-    for row in bad[:16]:
+    changed = [row for row in weights if row["components"]["value"]["status"] == "different"]
+    for row in changed[:64]:
         result = row["components"]["value"]
         lines.append(f"{row['stage']}: {result['status']} {short_metrics(result)}")
-    if len(bad) > 16:
-        lines.append(f"omitted_weight_details={len(bad) - 16}; see comparison.json")
+    if len(changed) > 64:
+        lines.append(f"omitted_weight_difference_details={len(changed) - 64}; see comparison.json")
+    unknown = [row for row in weights if row["components"]["value"]["status"] == "unknown"]
+    for row in unknown[:8]:
+        result = row["components"]["value"]
+        reason = str(result.get("reason") or result.get("gaps") or "unspecified")
+        lines.append(f"{row['stage']}: unknown reason={reason[:512]}")
+    if len(unknown) > 8:
+        lines.append(f"omitted_weight_unknown_details={len(unknown) - 8}; see comparison.json")
     groups = defaultdict(list)
     for row in stages:
         if not row["checkpoint"].startswith("weight."):
