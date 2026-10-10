@@ -571,6 +571,63 @@ padding、重排、缺失 runtime、重复请求、摘要缺失或 dtype 转换�
 若已经训练或恢复过 checkpoint，应指定对应版本；与原始 checkpoint 不同本身不能判定加载错误。
 这项检查用于定位参数内容及区域，不能单独区分初始加载、actor 同步和 sleep/wake 哪一步出了问题。
 
+### bias 尾部差异与 FSDP2 不等长分片：小规模独立检查
+
+完整 fc1 bias 长度为 4304。16 路分片时每片 269；32 路按向上取整分片时，
+前 31 片各 135，最后一片从全局下标 4185 开始，实际长度 119、补齐长度 135。
+若旧观测最后一个正常采样点为 4183、第一个异常点为 4200，这与最后一片的边界吻合，
+但还不能证明整片损坏，更不能直接断定加载、卸载或聚合中哪一步有问题。
+
+`probe_8039_fsdp_bias.py` 在独立 torchrun 作业中检查此路径。默认读取 27 个真实 bias，
+同时构造长度 4096、4320 的整除对照；每个进程的模型参数总量不足 0.3 MiB（BF16）。
+通信库、运行时与分配器还会占用额外内存。省略 `--checkpoint` 可直接使用确定性的合成值。
+无需启动 Ray、读取视频或实例化 Qwen 模型。使用原实验的 Python/torch-npu/verl 环境；
+先让占用这些卡的训练及 rollout 进程退出。
+
+两台机器分别执行相同命令，仅 `NODE_RANK` 不同（第一台为 0，第二台为 1）：
+
+```bash
+HEAD_IP=172.27.3.118       # 第一台机器、另一台能访问的 IP，不含端口
+NODE_RANK=0              # 第二台改成 1
+torchrun --nnodes=2 --nproc_per_node=16 --node_rank="$NODE_RANK" \
+  --master_addr="$HEAD_IP" --master_port=29639 \
+  tests/special_e2e/probe_8039_fsdp_bias.py \
+  --checkpoint /mnt/share/z00988734/src/weight/Qwen3-Omni-30B-A3B-Instruct \
+  --output outputs/debug/8039-bias-fsdp32
+```
+
+这里 `master_port` 是独立 torchrun 的空闲端口，不是 Ray 端口。沿用原环境实际使用的 HCCL
+网络配置，不假定网卡名为 eth0。两边代码、参数、权重路径必须一致；输出可放共享目录，
+每 rank 文件独立命名。不共享时摘要和聚合 JSON 写在 rank 0 所在机器，详细日志在各自机器。
+**每次调用更换输出目录**；发现同名 rank 日志时脚本拒绝覆盖。
+
+一次运行会自动检查：
+
+- `export_unobserved.result`：加载 → CPU 卸载 → 载回 → 保存 state_dict 引用 → 再卸载 →
+  导出 full_tensor，中间不读取诊断张量，避免观测同步掩盖时序问题。
+- `load.local/full_tensor`：新建另一份小模型，区分加载后的本地 shard 和聚合结果。
+- `initial_offload.local`、`reload.local`：检查 CPU/NPU 往返后的内容。
+- `export.offloaded_local/retained_local/retained_full_tensor/fresh_full_tensor`：
+  分别检查卸载后的模型、保存的 state_dict 引用及二者的聚合，寻找引用/补齐存储的问题。
+- `forward.result/resharded_local`：执行小模型前向，覆盖 FSDP 自身的 padded all-gather 路径。
+- `control.dtensor_full_tensor/padded_all_gather`：用已知正确的局部分片，独立对照 DTensor 聚合和显式补齐后的通信。
+
+所有检查都比较完整向量，摘要给出坏元素总数、首尾全局下标和少量实际值。
+默认 `--loader verl` 调用当前环境真正安装的 `fsdp2_load_full_state_dict`、CPU 卸载与载回函数，
+并记录路径和源码哈希。`--loader torch` 可作加载器对照，但不替代默认路径。
+这是默认手动 `param_offload` 路径的缩小实验，不模拟 CPUOffloadPolicy、优化器更新、
+完整 actor 层次、权重传输到 vLLM 或 worker sleep/wake。
+
+两边都加 `--fsdp-size 16` 并换输出目录，可以在相同双机 32 进程作业中构建两个 16 卡分片组作对照；
+单机对照则改成 `--nnodes=1 --node_rank=0 --nproc_per_node=16`。不需要先重跑完整 NextQA。
+
+首先查看 rank 0 输出目录中的 `bias_probe_summary.txt`（最多 64 KiB），可以直接发送。
+`load.local` 就失败时优先调查加载；local 正确而 full_tensor 错时优先调查聚合；
+卸载后首次失败时调查迁移；保存引用与新 state_dict 的导出结果不同则调查引用与补齐生命周期。
+这些是定位方向，不是自动的根因判定。同步观测会改变时序，因此保留第一段无中间读数的导出对照。
+全部通过只表示这个小模型未复现，不能证明实际 actor 和 rollout 权重链路正常。
+发生异常时 rank 日志的 `begin/error` 保留已到达位置，不把未完成步骤计为通过。
+
 ### 唤醒 OOM 时的显存时序
 
 设置非空 `VERL_OMNI_VIDEO_TRACE_DIR` 且 `VERL_OMNI_VIDEO_TRACE_STAGE=worker` 时，
