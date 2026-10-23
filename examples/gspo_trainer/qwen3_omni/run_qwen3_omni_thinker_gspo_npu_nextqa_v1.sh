@@ -66,7 +66,24 @@ if (( N_GPUS_PER_NODE % ROLLOUT_TP != 0 )); then
     exit 2
 fi
 
-exec python3 -m verl_omni.trainer.main_omni \
+BACKEND_ARGS=(
+    actor_rollout_ref.model.use_remove_padding=false
+    actor_rollout_ref.actor.strategy=fsdp2
+    actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16
+    actor_rollout_ref.actor.fsdp_config.param_offload=true
+    actor_rollout_ref.actor.fsdp_config.optimizer_offload=true
+    actor_rollout_ref.actor.fsdp_config.use_torch_compile=false
+    actor_rollout_ref.actor.fsdp_config.reshard_after_forward=true
+    actor_rollout_ref.actor.fsdp_config.forward_prefetch=false
+    ++actor_rollout_ref.actor.fsdp_config.use_no_sync_for_gradient_accumulation=false
+)
+case "${TRAINING_BACKEND:-fsdp2}" in
+    fsdp2) ;;
+    veomni) source "${SCRIPT_DIR}/veomni_npu_args.sh" ;;
+    *) echo "TRAINING_BACKEND must be fsdp2 or veomni." >&2; exit 2 ;;
+esac
+
+python3 -m verl_omni.trainer.main_omni \
     data.train_files="${TRAIN_FILE}" \
     data.val_files="${VAL_FILE}" \
     data.custom_cls.path=pkg://verl_omni.utils.dataset.nextqa_rl_dataset \
@@ -87,23 +104,14 @@ exec python3 -m verl_omni.trainer.main_omni \
     actor_rollout_ref.model.path="${MODEL_PATH}" \
     actor_rollout_ref.model.hf_config_path="${MODEL_PATH}" \
     actor_rollout_ref.model.tokenizer_path="${MODEL_PATH}" \
-    +actor_rollout_ref.model.override_config.attn_implementation=sdpa \
-    actor_rollout_ref.model.use_remove_padding=false \
+    ++actor_rollout_ref.model.override_config.attn_implementation=sdpa \
     actor_rollout_ref.model.enable_gradient_checkpointing=true \
     actor_rollout_ref.model.lora_rank=0 \
     actor_rollout_ref.model.lora.merge=false \
     actor_rollout_ref.model.target_modules=null \
     actor_rollout_ref.model.exclude_modules=null \
     actor_rollout_ref.actor.freeze_vision_tower=false \
-    actor_rollout_ref.actor.strategy=fsdp2 \
     actor_rollout_ref.actor.use_torch_compile=false \
-    actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16 \
-    actor_rollout_ref.actor.fsdp_config.param_offload=true \
-    actor_rollout_ref.actor.fsdp_config.optimizer_offload=true \
-    actor_rollout_ref.actor.fsdp_config.use_torch_compile=false \
-    actor_rollout_ref.actor.fsdp_config.reshard_after_forward=true \
-    actor_rollout_ref.actor.fsdp_config.forward_prefetch=false \
-    actor_rollout_ref.actor.fsdp_config.use_no_sync_for_gradient_accumulation=false \
     actor_rollout_ref.actor.ppo_epochs=1 \
     actor_rollout_ref.actor.ppo_mini_batch_size=16 \
     actor_rollout_ref.actor.use_dynamic_bsz=false \
@@ -123,9 +131,9 @@ exec python3 -m verl_omni.trainer.main_omni \
     actor_rollout_ref.rollout.tensor_model_parallel_size="${ROLLOUT_TP}" \
     actor_rollout_ref.rollout.agent.num_workers=$((N_GPUS_PER_NODE * NNODES / ROLLOUT_TP)) \
     actor_rollout_ref.rollout.load_format=safetensors \
-    +actor_rollout_ref.rollout.engine_kwargs.vllm_omni.output_mode=ar \
-    +actor_rollout_ref.rollout.engine_kwargs.vllm_omni.pipeline_name=qwen3_omni_moe \
-    +actor_rollout_ref.rollout.engine_kwargs.vllm_omni.additional_config.weight_nz_mode=0 \
+    ++actor_rollout_ref.rollout.engine_kwargs.vllm_omni.output_mode=ar \
+    ++actor_rollout_ref.rollout.engine_kwargs.vllm_omni.pipeline_name=qwen3_omni_moe \
+    ++actor_rollout_ref.rollout.engine_kwargs.vllm_omni.additional_config.weight_nz_mode=0 \
     ++actor_rollout_ref.rollout.engine_kwargs.vllm_omni.compilation_config.cudagraph_mode=PIECEWISE \
     actor_rollout_ref.rollout.gpu_memory_utilization="${ROLLOUT_MEMORY_FRACTION}" \
     actor_rollout_ref.rollout.max_num_seqs="${ROLLOUT_MAX_NUM_SEQS}" \
@@ -172,5 +180,10 @@ exec python3 -m verl_omni.trainer.main_omni \
     trainer.project_name=qwen3_omni_nextqa \
     trainer.experiment_name="${EXPERIMENT_NAME}" \
     trainer.logger='["console","tensorboard"]' \
+    ++actor_rollout_ref.model.override_config.freeze_vision_tower=false \
+    ++actor_rollout_ref.model.override_config.freeze_audio_tower=false \
+    ++ray_kwargs.ray_init.runtime_env.env_vars.VERL_USE_EXTERNAL_MODULES=verl_omni \
+    "++ray_kwargs.ray_init.runtime_env.env_vars.VLLM_ASCEND_ENABLE_NZ='${VLLM_ASCEND_ENABLE_NZ}'" \
+    "${BACKEND_ARGS[@]}" \
     "$@" \
-    2>&1 | tee run_qwen3omni_npu_nextqa_full_ms_16.log
+    2>&1 | tee "${LOG_FILE:-run_qwen3omni_npu_nextqa_full_ms_16.log}"

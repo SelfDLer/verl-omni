@@ -1,6 +1,6 @@
 # Qwen3-Omni Thinker GSPO recipes
 
-Last updated: 09/29/2026
+Last updated: 10/23/2026
 
 This directory contains both FSDP2 and Megatron recipes. For non-Megatron
 setup, data preparation and training instructions, see the
@@ -17,6 +17,9 @@ defaults and accept CLI overrides.
 | AVQA LoRA | FSDP2 / GPU | [AVQA LoRA](https://github.com/verl-project/verl-omni/blob/main/examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_lora_avqa_v1.sh) |
 | AVQA full-parameter | FSDP2 / NPU | [AVQA NPU](https://github.com/verl-project/verl-omni/blob/main/examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_npu_avqa_v1.sh) |
 | NExT-QA full-parameter | FSDP2 / NPU | [NExT-QA NPU](https://github.com/verl-project/verl-omni/blob/main/examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_npu_nextqa_v1.sh) |
+| MMK12 full-parameter | VeOmni / NPU | [MMK12 VeOmni NPU](run_qwen3_omni_thinker_gspo_veomni_npu.sh) |
+| AVQA full-parameter | VeOmni / NPU | [AVQA VeOmni NPU](run_qwen3_omni_thinker_gspo_veomni_npu_avqa_v1.sh) |
+| NExT-QA full-parameter | VeOmni / NPU | [NExT-QA VeOmni NPU](run_qwen3_omni_thinker_gspo_veomni_npu_nextqa_v1.sh) |
 | AudioMCQ full-parameter, separate-async | Megatron / GPU | [AudioMCQ](https://github.com/verl-project/verl-omni/blob/main/examples/gspo_trainer/qwen3_omni/run_qwen3_omni_megatron_audiomcq_separate_async.sh) |
 | AVQA image+audio full-parameter, separate-async | Megatron / GPU | [AVQA](https://github.com/verl-project/verl-omni/blob/main/examples/gspo_trainer/qwen3_omni/run_qwen3_omni_megatron_avqa_separate_async.sh) |
 | Geo3K full-parameter, separate-async | Megatron / GPU | [Geo3K](https://github.com/verl-project/verl-omni/blob/main/examples/gspo_trainer/qwen3_omni/run_qwen3_omni_megatron_geo3k_separate_async.sh) |
@@ -24,6 +27,133 @@ defaults and accept CLI overrides.
 The following sections describe the **Megatron AudioMCQ**, **AVQA**, and **Geo3K** recipes,
 their dependency prerequisites and validation limits. For model-adapter development, see the
 [Megatron integration notes](../../../docs/contributing/integrating_an_omni_model.md#21-megatron-training-adapters).
+
+## MMK12 with VeOmni on Ascend NPU
+
+The [NPU launcher](run_qwen3_omni_thinker_gspo_veomni_npu.sh) reuses the GPU
+VeOmni GSPO recipe, including MMK12 data/reward processing, full Thinker text
+backbone training, frozen vision/audio towers, and actor/reference operator
+interpolation. It defaults to one Atlas A3 node with 16 NPUs, actor EP=8 and
+rollout TP=2. This recipe uses text/image inputs. The adapter also packs audio
+and passes video features for the comparison recipes below; Talker training,
+LoRA and Ulysses SP remain unsupported.
+
+First install the [NPU training stack](../../../docs/start/install_npu.md) and
+activate CANN/ATB on every Ray node. Add VeOmni 0.1.12 following its
+[Ascend installation guide](https://github.com/ByteDance-Seed/VeOmni/blob/v0.1.12/docs/hardware_support/get_started_npu.md),
+preserving the compatible torch/torch-npu pair required by the rollout stack.
+Do not install VeOmni's GPU extra into this environment. The combined
+VeOmni/vLLM-Ascend dependency stack still requires validation on the target hardware.
+
+Run from the repository root after preparing MMK12 using the parent GSPO guide:
+
+```bash
+MODEL_PATH=/models/Qwen3-Omni-30B-A3B-Instruct \
+TRAIN_FILE=/data/mmk12/train.parquet VAL_FILE=/data/mmk12/test.parquet \
+bash examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_veomni_npu.sh
+```
+
+The launcher selects `fused_npu` MoE, NPU CE/RMSNorm/RoPE, and eager
+SwiGLU/load-balancing loss. `flash_attention_2` uses Transformers' Ascend
+attention implementation through VeOmni's packed attention wrapper.
+The reference inherits actor operator overrides. `NUM_GPUS` retains the
+base recipe's name but counts NPUs per node; override it together with
+`NNODES`, `ACTOR_EP` and `ROLLOUT_TP` for other topologies. Additional Hydra
+arguments go last and take precedence.
+
+`MULTI_STREAM_MEMORY_REUSE` defaults to `2` for Ascend multi-stream memory
+reuse and is forwarded to Ray workers alongside `VLLM_ASCEND_ENABLE_NZ`.
+The shared GPU recipe already exports `VERL_USE_EXTERNAL_MODULES=verl_omni`
+and passes it through Ray's runtime environment, so the NPU wrapper inherits both.
+
+This recipe has not yet been validated with an NPU training run. Before a
+full run, exercise actor/reference scoring, backward/optimizer updates and
+actor-to-rollout weight synchronization, for example with
+`trainer.total_training_steps=2 trainer.test_freq=1 trainer.save_freq=-1`.
+CPU regression coverage lives in the existing VeOmni engine, adapter and
+launcher-configuration test modules.
+
+## AVQA and NExT-QA: FSDP2 versus VeOmni on NPU
+
+The VeOmni entrypoints call the existing dataset launchers with
+`TRAINING_BACKEND=veomni`. Data, rewards, sampling, batch sizes, learning rate,
+validation and checkpoint schedules remain in those shared launchers.
+`veomni_npu_args.sh` supplies only VeOmni engine settings. Run from the repository
+root with the same checkpoint, parquet files, hardware and dependency versions:
+
+```bash
+# AVQA: the existing launcher sources CANN/ATB via ASCEND_HOME_PATH.
+bash examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_npu_avqa_v1.sh
+bash examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_veomni_npu_avqa_v1.sh
+
+# NExT-QA: source CANN/ATB before either launch.
+bash examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_npu_nextqa_v1.sh
+bash examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_veomni_npu_nextqa_v1.sh
+```
+
+| Setting | AVQA (both backends) | NExT-QA (both backends) |
+| --- | --- | --- |
+| Default NPUs / rollout TP | 16 / 2 | 16 / 4 |
+| Prompt / response limit | 4096 / 12288 | 8192 / 1024 |
+| Prompt batch / samples per prompt | 128 / 16 | 32 / 8 |
+| PPO mini-batch | 16 | 16 |
+| Actor batching | Dynamic, 20480 token budget | Static, micro-batch 1 |
+| LR / weight decay | 1e-6 / 0.1 | 1e-6 / 0.01 |
+| Schedule / warmup ratio | Constant / default 0 | Constant / 0.05 |
+| Rollout memory fraction | 0.6 | 0.65 |
+| Trainable parameters | Thinker text backbone | All Thinker parameters |
+| Training budget | 10 epochs | 500 steps, up to 10 epochs |
+
+Both paths now explicitly honor `model.override_config.freeze_vision_tower`
+and `freeze_audio_tower`: AVQA sets both true, NExT-QA both false. This makes
+AVQA's intended encoder freezing effective in the V1 FSDP engine too;
+`exclude_modules` only controls LoRA targeting and is not a full-tuning freeze
+policy. Re-run the FSDP baseline with these launchers rather than comparing
+against an older AVQA run with a different trainable-parameter set.
+Other FSDP recipes without these override keys retain their existing behavior;
+VeOmni retains frozen-tower defaults for the MMK12 recipe.
+
+VeOmni defaults to **EP=1** for the initial comparison. Measure EP=8 separately
+with `ACTOR_EP=8` to distinguish backend/kernel changes from expert parallelism.
+VeOmni uses packed FlashAttention inputs and fused log-probs; NExT-QA FSDP
+retains padded inputs. The FSDP recipes load BF16 model parameters, while
+VeOmni's default `mixed_precision=true` loads FP32 parameters and uses BF16
+for forward/backward computation. Optimizer parameter precision therefore
+differs even though the learning rate and batch settings match. Record actual
+parameter/optimizer dtypes when comparing learning curves. These differences
+must be reported with throughput, peak memory, step time and validation reward.
+Do not assume bitwise or convergence equivalence. Use separate output directories
+and avoid resuming one backend from the other's checkpoint.
+
+Audio packing follows VeOmni 0.1.12's data transform: HF features
+`(num_audios, mel_bins, padded_frames)` become `(sum_valid_frames, mel_bins)`
+with per-clip `audio_feature_lengths`. Video grids/features pass through, and
+all modality masks exclude generated response tokens. Video-with-audio alignment
+is not validated by NExT-QA, which keeps `use_audio_in_video=false`.
+
+The new launchers write combined stdout/stderr to timestamped logs; `LOG_FILE`
+and `RUN_TIME` are overridable. Regression tests cover audio packing/gradients, video
+boundaries, parameter selection and launch-argument parity. The launch-argument
+and Hydra composition checks passed locally; the tensor tests still require
+a training dependency environment. Run them before the NPU smoke test:
+
+```bash
+python -m pytest -q tests/pipelines/test_qwen3_omni_veomni_on_cpu.py \
+  tests/workers/test_omni_veomni_engine_on_cpu.py \
+  tests/utils/test_qwen3_omni_veomni_npu_launcher_on_cpu.py
+```
+
+A user-reported NExT-QA NPU run on the pre-rebase branch reached validation
+reward about 0.84 around step 50, from 0.768 initially, at about 220 seconds
+per step. The reported FSDP2 run started at 0.759 and peaked around 0.79 within
+100 steps, at about 320 seconds per step; both reported `probs_diff_mean`
+around 0.011. Raw logs and exact runtime dependency versions are not included,
+and this does not validate the rebased revision. Precision differs as described
+above, and validation samples one response at temperature 1.0 and top-p 0.7;
+these observations do not establish a controlled backend convergence advantage.
+The NExT-QA run exercises video without audio, so AVQA audio training and
+joint audio/video alignment remain unverified. Start new environments with
+two updates and validation before collecting comparison measurements.
 
 ## AudioMCQ with Megatron and V1 separate-async rollout
 

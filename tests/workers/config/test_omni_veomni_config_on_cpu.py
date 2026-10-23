@@ -29,6 +29,7 @@ from verl.workers.config import VeOmniActorConfig
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_veomni.sh"
+NPU_SCRIPT = ROOT / "examples/gspo_trainer/qwen3_omni/run_qwen3_omni_thinker_gspo_veomni_npu.sh"
 SMOKE_SCRIPT = ROOT / "tests/special_e2e/run_gspo_qwen3_omni_thinker_veomni_smoke.sh"
 QWEN_OPS_DEFAULTS = {
     "attn_implementation": "flash_attention_2",
@@ -73,7 +74,21 @@ def _compose_launcher(tmp_path, extra=(), script=SCRIPT):
     result = subprocess.run(
         ["bash", str(script), *extra],
         env={
-            **{k: v for k, v in os.environ.items() if k not in {"MOE_IMPL", "ATTN_IMPL"}},
+            **{
+                k: v
+                for k, v in os.environ.items()
+                if k
+                not in {
+                    "MOE_IMPL",
+                    "ATTN_IMPL",
+                    "NUM_GPUS",
+                    "NNODES",
+                    "ACTOR_EP",
+                    "ROLLOUT_TP",
+                    "VLLM_ASCEND_ENABLE_NZ",
+                    "MULTI_STREAM_MEMORY_REUSE",
+                }
+            },
             "PATH": f"{tmp_path}:{os.environ['PATH']}",
             "DATA_DIR": str(tmp_path / "data"),
             "MODEL_PATH": str(tmp_path / "model"),
@@ -116,6 +131,42 @@ def test_launcher_user_overrides_take_precedence(tmp_path, actor_module):
     config = _compose_launcher(tmp_path, ("actor_rollout_ref.actor.optim.lr=1e-6", "trainer.total_training_steps=2"))
     actor = omega_conf_to_dataclass(config.actor_rollout_ref.actor)
     assert actor.optim.lr == pytest.approx(1e-6)
+    assert config.trainer.total_training_steps == 2
+
+
+def test_npu_launcher_composes_shared_engine_and_reference_ops(tmp_path, actor_module):
+    config = _compose_launcher(tmp_path, script=NPU_SCRIPT)
+    assert config.trainer.device == "npu"
+    assert config.actor_rollout_ref.actor.strategy == "veomni"
+    assert config.actor_rollout_ref.ref.strategy == "veomni"
+    assert config.actor_rollout_ref.actor.veomni.use_torch_compile is False
+    assert config.actor_rollout_ref.ref.veomni.use_torch_compile is False
+    expected_ops = {
+        "attn_implementation": "flash_attention_2",
+        "moe_implementation": "fused_npu",
+        "cross_entropy_loss_implementation": "npu",
+        "rms_norm_implementation": "npu",
+        "swiglu_mlp_implementation": "eager",
+        "rotary_pos_emb_implementation": "npu",
+        "load_balancing_loss_implementation": "eager",
+    }
+    for name, expected in expected_ops.items():
+        assert config.actor_rollout_ref.actor.veomni[name] == expected
+        assert config.actor_rollout_ref.ref.veomni[name] == expected
+    assert config.actor_rollout_ref.model.use_fused_kernels
+    assert config.ray_kwargs.ray_init.runtime_env.env_vars.VLLM_ASCEND_ENABLE_NZ == "0"
+    assert config.ray_kwargs.ray_init.runtime_env.env_vars.MULTI_STREAM_MEMORY_REUSE == "2"
+    assert config.ray_kwargs.ray_init.runtime_env.env_vars.VERL_USE_EXTERNAL_MODULES == "verl_omni"
+
+
+def test_npu_launcher_reference_tracks_caller_overrides(tmp_path, actor_module):
+    config = _compose_launcher(
+        tmp_path,
+        ("actor_rollout_ref.actor.veomni.moe_implementation=eager", "trainer.total_training_steps=2"),
+        script=NPU_SCRIPT,
+    )
+    assert config.actor_rollout_ref.actor.veomni.moe_implementation == "eager"
+    assert config.actor_rollout_ref.ref.veomni.moe_implementation == "eager"
     assert config.trainer.total_training_steps == 2
 
 
